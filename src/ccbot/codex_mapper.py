@@ -29,6 +29,7 @@ class CodexSessionMeta:
     cwd: str
     file_path: Path
     started_ts: float
+    file_mtime: float
 
 
 def _norm_path(path: str) -> str:
@@ -69,7 +70,9 @@ class CodexSessionMapper:
         # file -> (mtime, size, parsed_meta_or_none)
         self._meta_cache: dict[str, tuple[float, int, CodexSessionMeta | None]] = {}
 
-    def _read_rollout_meta(self, file_path: Path) -> CodexSessionMeta | None:
+    def _read_rollout_meta(
+        self, file_path: Path, file_mtime: float
+    ) -> CodexSessionMeta | None:
         try:
             with open(file_path, "r", encoding="utf-8") as f:
                 first = f.readline().strip()
@@ -99,6 +102,7 @@ class CodexSessionMapper:
             cwd=_norm_path(cwd),
             file_path=file_path,
             started_ts=_parse_iso_ts(started_at),
+            file_mtime=file_mtime,
         )
 
     def _scan_sessions(self) -> list[CodexSessionMeta]:
@@ -118,9 +122,11 @@ class CodexSessionMapper:
             if cached and cached[0] == st.st_mtime and cached[1] == st.st_size:
                 meta = cached[2]
             else:
-                meta = self._read_rollout_meta(file_path)
+                meta = self._read_rollout_meta(file_path, st.st_mtime)
                 self._meta_cache[key] = (st.st_mtime, st.st_size, meta)
             if meta:
+                # Refresh mtime from current stat for cache-hit case
+                meta.file_mtime = st.st_mtime
                 metas.append(meta)
 
         # Drop deleted files from cache
@@ -151,7 +157,15 @@ class CodexSessionMapper:
         for meta in metas:
             by_cwd.setdefault(meta.cwd, []).append(meta)
         for cwd in by_cwd:
-            by_cwd[cwd].sort(key=lambda m: m.started_ts, reverse=True)
+            by_cwd[cwd].sort(
+                key=lambda m: (m.file_mtime, m.started_ts),
+                reverse=True,
+            )
+        all_metas = sorted(
+            metas,
+            key=lambda m: (m.file_mtime, m.started_ts),
+            reverse=True,
+        )
 
         live_wids = {w.window_id for w in windows}
         assigned_session_ids: set[str] = set()
@@ -164,9 +178,10 @@ class CodexSessionMapper:
                 existing = {}
             existing_provider = existing.get("provider", "claude")
 
-            # Map windows that currently run codex, or were mapped as codex before.
+            # Map windows that appear active, or were mapped as codex before.
+            # Codex often appears as "node" in tmux pane_current_command.
             pane_cmd = (w.pane_current_command or "").lower()
-            if "codex" not in pane_cmd and existing_provider != "codex":
+            if existing_provider != "codex" and pane_cmd in ("", "bash", "sh", "zsh", "fish"):
                 continue
 
             norm_cwd = _norm_path(w.cwd)
@@ -175,13 +190,22 @@ class CodexSessionMapper:
             chosen: CodexSessionMeta | None = None
             existing_sid = existing.get("session_id", "")
             if existing_sid:
-                for meta in candidates:
+                for meta in all_metas:
                     if meta.session_id == existing_sid:
                         chosen = meta
                         break
 
             if chosen is None:
                 for meta in candidates:
+                    if meta.session_id in assigned_session_ids:
+                        continue
+                    chosen = meta
+                    break
+
+            # Fallback: choose the newest unassigned rollout across all projects.
+            # This handles "codex resume <id>" where pane cwd can differ from session cwd.
+            if chosen is None:
+                for meta in all_metas:
                     if meta.session_id in assigned_session_ids:
                         continue
                     chosen = meta
