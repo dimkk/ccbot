@@ -150,6 +150,20 @@ ccbot
 uv run ccbot
 ```
 
+### Provider Switching
+
+Switch provider at startup:
+
+```bash
+# Claude Code
+CCBOT_PROVIDER=claude CCBOT_AGENT_COMMAND=claude uv run ccbot
+
+# Codex CLI
+CCBOT_PROVIDER=codex CCBOT_AGENT_COMMAND=codex uv run ccbot
+```
+
+You can also place these values in `~/.ccbot/.env`.
+
 ### Commands
 
 **Bot commands:**
@@ -241,6 +255,24 @@ codex
 ```
 
 The window must be in the `ccbot` tmux session (configurable via `TMUX_SESSION_NAME`). Claude provider uses hooks for session mapping; Codex provider uses rollout mapping.
+
+## Resume Existing Session
+
+To attach CCBot to an existing Codex session, run:
+
+```bash
+CCBOT_PROVIDER=codex \
+CCBOT_AGENT_COMMAND='codex resume <session-id>' \
+uv run ccbot
+```
+
+Example:
+
+```bash
+CCBOT_PROVIDER=codex \
+CCBOT_AGENT_COMMAND='codex resume 019c9eef-c5f7-7dc2-9e92-de59a1c3cd28' \
+uv run ccbot
+```
 
 ## Data Storage
 
