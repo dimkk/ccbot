@@ -96,7 +96,7 @@ ALLOWED_USERS=your_telegram_user_id
 | `CCBOT_AGENT_COMMAND`   | provider default (`claude`/`codex`) | Command to run in new windows |
 | `CLAUDE_COMMAND`        | `claude`   | Backward-compatible alias for `CCBOT_AGENT_COMMAND` |
 | `CCBOT_CODEX_SESSIONS_PATH` | `~/.codex/sessions` | Codex rollout root path |
-| `CCBOT_FORWARD_SLASH`   | `true` for `claude`, `false` for `codex` | Forward unknown `/command` to CLI |
+| `CCBOT_FORWARD_SLASH`   | `true` | Forward unknown `/command` to CLI |
 | `MONITOR_POLL_INTERVAL` | `2.0`      | Polling interval in seconds                      |
 | `CCBOT_SHOW_HIDDEN_DIRS` | `false` | Show hidden (dot) directories in directory browser |
 

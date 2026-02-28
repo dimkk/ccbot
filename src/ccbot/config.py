@@ -95,7 +95,9 @@ class Config:
         self.agent_name = "Codex CLI" if self.provider == "codex" else "Claude Code"
         self.supports_usage_command = self.provider == "claude"
         self.supports_claude_interactive_ui = self.provider == "claude"
-        slash_default = "true" if self.provider == "claude" else "false"
+        # Forward unknown slash commands for both providers by default:
+        # e.g. /status, /permissions, /clear, /compact.
+        slash_default = "true"
         self.forward_slash_commands = (
             os.getenv("CCBOT_FORWARD_SLASH", slash_default).lower() == "true"
         )

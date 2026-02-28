@@ -80,6 +80,7 @@ uv run ccbot codex-map
 3. Выбрать директорию
 4. Убедиться, что создаётся tmux window с `codex`
 5. Убедиться, что новые сообщения приходят из rollout-файлов (`~/.codex/sessions/.../rollout-*.jsonl`)
+6. Проверить slash-forwarding: отправить `/status` и `/permissions` в тот же чат
 
 ## 7. Отладка
 
