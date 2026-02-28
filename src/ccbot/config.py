@@ -104,24 +104,19 @@ class Config:
         self.forward_slash_commands = (
             os.getenv("CCBOT_FORWARD_SLASH", slash_default).lower() == "true"
         )
-        # Codex can emit very chatty tool events; compact mode keeps delivery
-        # near real-time by sending consolidated tool_result messages.
-        self.codex_compact_tool_events = (
-            os.getenv("CCBOT_CODEX_COMPACT_TOOL_EVENTS", "true").lower() == "true"
-        )
-        # Optional turbo mode: when per-user queue backlog grows, drop
-        # low-priority codex thinking messages to keep end-user delivery close
-        # to real-time.
-        self.codex_drop_thinking_on_backlog = (
-            os.getenv("CCBOT_CODEX_DROP_THINKING_ON_BACKLOG", "true").lower() == "true"
+        # Codex catch-up mode:
+        # - enabled: whether to allow compact/drop strategy under load
+        # - threshold: queue size when catch-up starts
+        self.codex_catchup_enabled = (
+            os.getenv("CCBOT_CODEX_CATCHUP_ENABLED", "true").lower() == "true"
         )
         try:
-            self.codex_backlog_thinking_threshold = max(
+            self.codex_catchup_threshold = max(
                 1,
-                int(os.getenv("CCBOT_CODEX_BACKLOG_THINKING_THRESHOLD", "20")),
+                int(os.getenv("CCBOT_CODEX_CATCHUP_THRESHOLD", "60")),
             )
         except ValueError:
-            self.codex_backlog_thinking_threshold = 20
+            self.codex_catchup_threshold = 60
 
         # All state files live under config_dir
         self.state_file = self.config_dir / "state.json"

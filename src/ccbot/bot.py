@@ -106,6 +106,7 @@ from .handlers.interactive_ui import (
 )
 from .handlers.message_queue import (
     clear_status_msg_info,
+    drop_low_priority_tasks_for_catchup,
     enqueue_content_message,
     enqueue_status_update,
     get_message_queue,
@@ -135,6 +136,8 @@ session_monitor: SessionMonitor | None = None
 
 # Status polling task
 _status_poll_task: asyncio.Task | None = None
+_codex_super_turbo_until: dict[int, float] = {}
+_CODEX_SUPER_TURBO_HOLD_SECONDS = 45.0
 
 # Claude commands shown in bot menu (forwarded via tmux)
 CLAUDE_COMMANDS: dict[str, str] = {
@@ -1587,6 +1590,44 @@ async def handle_new_message(msg: NewMessage, bot: Bot) -> None:
 
     for user_id, wid, thread_id in active_users:
         queue = get_message_queue(user_id)
+        queue_size = queue.qsize() if queue is not None else 0
+
+        super_turbo = False
+        if config.provider == "codex" and config.codex_catchup_enabled:
+            now = time.monotonic()
+            until = _codex_super_turbo_until.get(user_id, 0.0)
+            if queue_size >= config.codex_catchup_threshold:
+                if until <= now:
+                    dropped = await drop_low_priority_tasks_for_catchup(user_id)
+                    logger.warning(
+                        "Super turbo ON: user=%d queue=%d dropped=%d threshold=%d",
+                        user_id,
+                        queue_size,
+                        dropped,
+                        config.codex_catchup_threshold,
+                    )
+                until = max(
+                    until,
+                    now + _CODEX_SUPER_TURBO_HOLD_SECONDS,
+                )
+                _codex_super_turbo_until[user_id] = until
+            super_turbo = until > now
+            if not super_turbo:
+                _codex_super_turbo_until.pop(user_id, None)
+
+        if super_turbo and msg.is_complete:
+            keep_in_super = msg.role == "assistant" and msg.content_type in (
+                "text",
+                "local_command",
+            )
+            if (
+                msg.content_type == "tool_use"
+                and msg.tool_name in INTERACTIVE_TOOL_NAMES
+            ):
+                keep_in_super = True
+            if not keep_in_super:
+                await _mark_window_read_offset(user_id, wid)
+                continue
 
         # Handle interactive tools specially - capture terminal and send UI
         if msg.tool_name in INTERACTIVE_TOOL_NAMES and msg.content_type == "tool_use":
@@ -1605,29 +1646,12 @@ async def handle_new_message(msg: NewMessage, bot: Bot) -> None:
                 # UI not rendered — clear the early-set mode
                 clear_interactive_mode(user_id, thread_id)
 
-        if (
-            msg.is_complete
-            and config.provider == "codex"
-            and config.codex_drop_thinking_on_backlog
-            and msg.content_type == "thinking"
-            and queue is not None
-            and queue.qsize() >= config.codex_backlog_thinking_threshold
-        ):
-            logger.info(
-                "Dropping codex thinking due backlog: user=%d queue=%d threshold=%d",
-                user_id,
-                queue.qsize(),
-                config.codex_backlog_thinking_threshold,
-            )
-            await _mark_window_read_offset(user_id, wid)
-            continue
-
         # In codex compact mode, skip standalone non-interactive tool_use
         # entries and let the following tool_result deliver consolidated output.
         if (
             msg.is_complete
             and config.provider == "codex"
-            and config.codex_compact_tool_events
+            and config.codex_catchup_enabled
             and msg.content_type == "tool_use"
             and msg.tool_name not in INTERACTIVE_TOOL_NAMES
         ):

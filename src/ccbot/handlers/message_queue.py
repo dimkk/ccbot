@@ -118,6 +118,49 @@ def _inspect_queue(queue: asyncio.Queue[MessageTask]) -> list[MessageTask]:
     return items
 
 
+async def drop_low_priority_tasks_for_catchup(user_id: int) -> int:
+    """Drop queued low-priority tasks to reduce delivery lag.
+
+    Drops:
+      - status_update/status_clear tasks
+      - content tasks of type thinking/tool_use/tool_result
+    """
+    queue = _message_queues.get(user_id)
+    lock = _queue_locks.get(user_id)
+    if queue is None or lock is None:
+        return 0
+
+    dropped = 0
+    async with lock:
+        items = _inspect_queue(queue)
+        kept: list[MessageTask] = []
+
+        for task in items:
+            if task.task_type in ("status_update", "status_clear"):
+                dropped += 1
+                continue
+            if task.task_type == "content" and task.content_type in (
+                "thinking",
+                "tool_use",
+                "tool_result",
+            ):
+                dropped += 1
+                continue
+            kept.append(task)
+
+        for task in kept:
+            queue.put_nowait(task)
+            # Compensate extra unfinished_tasks increment from put_nowait.
+            queue.task_done()
+
+        # Removed tasks will never be processed by worker; close their
+        # unfinished_tasks counters now.
+        for _ in range(dropped):
+            queue.task_done()
+
+    return dropped
+
+
 def _can_merge_tasks(base: MessageTask, candidate: MessageTask) -> bool:
     """Check if two content tasks can be merged."""
     if base.window_id != candidate.window_id:
@@ -316,7 +359,7 @@ async def _process_content_task(bot: Bot, user_id: int, task: MessageTask) -> No
 
     if (
         config.provider == "codex"
-        and config.codex_compact_tool_events
+        and config.codex_catchup_enabled
         and task.content_type == "tool_use"
     ):
         return
