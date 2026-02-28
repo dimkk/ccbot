@@ -41,6 +41,22 @@ class TestConfigValid:
         cfg = Config()
         assert cfg.is_user_allowed(99999) is False
 
+    def test_default_provider_is_claude(self):
+        cfg = Config()
+        assert cfg.provider == "claude"
+        assert cfg.agent_command == "claude"
+        assert cfg.supports_usage_command is True
+        assert cfg.forward_slash_commands is True
+
+    def test_codex_provider_defaults(self, monkeypatch):
+        monkeypatch.setenv("CCBOT_PROVIDER", "codex")
+        cfg = Config()
+        assert cfg.provider == "codex"
+        assert cfg.agent_command == "codex"
+        assert cfg.supports_usage_command is False
+        assert cfg.forward_slash_commands is False
+        assert cfg.provider_data_root == cfg.codex_sessions_path
+
 
 @pytest.mark.usefixtures("_base_env")
 class TestConfigMissingEnv:
@@ -57,6 +73,11 @@ class TestConfigMissingEnv:
     def test_non_numeric_allowed_users(self, monkeypatch):
         monkeypatch.setenv("ALLOWED_USERS", "abc")
         with pytest.raises(ValueError, match="non-numeric"):
+            Config()
+
+    def test_invalid_provider(self, monkeypatch):
+        monkeypatch.setenv("CCBOT_PROVIDER", "bad-provider")
+        with pytest.raises(ValueError, match="CCBOT_PROVIDER"):
             Config()
 
 

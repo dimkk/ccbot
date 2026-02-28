@@ -2,7 +2,7 @@
 
 [中文文档](README_CN.md)
 
-Control Claude Code sessions remotely via Telegram — monitor, interact, and manage AI coding sessions running in tmux.
+Control AI coding sessions remotely via Telegram — monitor, interact, and manage agent sessions running in tmux.
 
 https://github.com/user-attachments/assets/15ffb38e-5eb9-4720-93b9-412e4961dc93
 
@@ -22,21 +22,24 @@ In fact, CCBot itself was built this way — iterating on itself through Claude 
 
 ## Features
 
-- **Topic-based sessions** — Each Telegram topic maps 1:1 to a tmux window and Claude session
+- **Topic-based sessions** — Each Telegram topic maps 1:1 to a tmux window and agent session
 - **Real-time notifications** — Get Telegram messages for assistant responses, thinking content, tool use/result, and local command output
 - **Interactive UI** — Navigate AskUserQuestion, ExitPlanMode, and Permission Prompts via inline keyboard
-- **Send messages** — Forward text to Claude Code via tmux keystrokes
-- **Slash command forwarding** — Send any `/command` directly to Claude Code (e.g. `/clear`, `/compact`, `/cost`)
-- **Create new sessions** — Start Claude Code sessions from Telegram via directory browser
+- **Send messages** — Forward text to the active CLI via tmux keystrokes
+- **Slash command forwarding** — Optional forwarding for unknown `/command` to the active CLI
+- **Create new sessions** — Start agent sessions from Telegram via directory browser
 - **Kill sessions** — Close a topic to auto-kill the associated tmux window
 - **Message history** — Browse conversation history with pagination (newest first)
-- **Hook-based session tracking** — Auto-associates tmux windows with Claude sessions via `SessionStart` hook
+- **Provider support** — Claude Code (`claude`) and Codex CLI (`codex`)
+- **Session tracking** — Claude via `SessionStart` hook, Codex via rollout mapper
 - **Persistent state** — Thread bindings and read offsets survive restarts
 
 ## Prerequisites
 
 - **tmux** — must be installed and available in PATH
-- **Claude Code** — the CLI tool (`claude`) must be installed
+- **Agent CLI** — install one or both:
+  - Claude Code (`claude`)
+  - Codex CLI (`codex`)
 
 ## Installation
 
@@ -89,17 +92,23 @@ ALLOWED_USERS=your_telegram_user_id
 | ----------------------- | ---------- | ------------------------------------------------ |
 | `CCBOT_DIR`             | `~/.ccbot` | Config/state directory (`.env` loaded from here) |
 | `TMUX_SESSION_NAME`     | `ccbot`    | Tmux session name                                |
-| `CLAUDE_COMMAND`        | `claude`   | Command to run in new windows                    |
+| `CCBOT_PROVIDER`        | `claude`   | Session provider: `claude` or `codex`            |
+| `CCBOT_AGENT_COMMAND`   | provider default (`claude`/`codex`) | Command to run in new windows |
+| `CLAUDE_COMMAND`        | `claude`   | Backward-compatible alias for `CCBOT_AGENT_COMMAND` |
+| `CCBOT_CODEX_SESSIONS_PATH` | `~/.codex/sessions` | Codex rollout root path |
+| `CCBOT_FORWARD_SLASH`   | `true` for `claude`, `false` for `codex` | Forward unknown `/command` to CLI |
 | `MONITOR_POLL_INTERVAL` | `2.0`      | Polling interval in seconds                      |
 | `CCBOT_SHOW_HIDDEN_DIRS` | `false` | Show hidden (dot) directories in directory browser |
 
 > If running on a VPS where there's no interactive terminal to approve permissions, consider:
 >
 > ```
-> CLAUDE_COMMAND=IS_SANDBOX=1 claude --dangerously-skip-permissions
+> CCBOT_AGENT_COMMAND=IS_SANDBOX=1 claude --dangerously-skip-permissions
 > ```
 
-## Hook Setup (Recommended)
+## Session Tracking Setup
+
+### Claude Provider (Recommended)
 
 Auto-install via CLI:
 
@@ -123,6 +132,10 @@ Or manually add to `~/.claude/settings.json`:
 
 This writes window-session mappings to `$CCBOT_DIR/session_map.json` (`~/.ccbot/` by default), so the bot automatically tracks which Claude session is running in each tmux window — even after `/clear` or session restarts.
 
+### Codex Provider
+
+No hook installation is required. CCBot maps tmux windows to Codex rollout files from `~/.codex/sessions` (or `CCBOT_CODEX_SESSIONS_PATH`).
+
 ## Usage
 
 ```bash
@@ -142,9 +155,9 @@ uv run ccbot
 | `/start`      | Show welcome message            |
 | `/history`    | Message history for this topic  |
 | `/screenshot` | Capture terminal screenshot     |
-| `/esc`        | Send Escape to interrupt Claude |
+| `/esc`        | Send Escape to interrupt active session |
 
-**Claude Code commands (forwarded via tmux):**
+**Claude provider commands (forwarded via tmux):**
 
 | Command    | Description                  |
 | ---------- | ---------------------------- |
@@ -154,7 +167,7 @@ uv run ccbot
 | `/help`    | Show Claude Code help        |
 | `/memory`  | Edit CLAUDE.md               |
 
-Any unrecognized `/command` is also forwarded to Claude Code as-is (e.g. `/review`, `/doctor`, `/init`).
+For `CCBOT_PROVIDER=claude`, unknown `/command` is forwarded as-is (e.g. `/review`, `/doctor`, `/init`).
 
 ### Topic Workflow
 
@@ -165,11 +178,11 @@ Any unrecognized `/command` is also forwarded to Claude Code as-is (e.g. `/revie
 1. Create a new topic in the Telegram group
 2. Send any message in the topic
 3. A directory browser appears — select the project directory
-4. A tmux window is created, `claude` starts, and your pending message is forwarded
+4. A tmux window is created, agent command starts, and your pending message is forwarded
 
 **Sending messages:**
 
-Once a topic is bound to a session, just send text in that topic — it gets forwarded to Claude Code via tmux keystrokes.
+Once a topic is bound to a session, just send text in that topic — it gets forwarded to the active CLI via tmux keystrokes.
 
 **Killing a session:**
 
@@ -197,14 +210,14 @@ I'll look into the login bug...
 
 The monitor polls session JSONL files every 2 seconds and sends notifications for:
 
-- **Assistant responses** — Claude's text replies
+- **Assistant responses** — model text replies
 - **Thinking content** — Shown as expandable blockquotes
 - **Tool use/result** — Summarized with stats (e.g. "Read 42 lines", "Found 5 matches")
 - **Local command output** — stdout from commands like `git status`, prefixed with `❯ command_name`
 
 Notifications are delivered to the topic bound to the session's window.
 
-## Running Claude Code in tmux
+## Running in tmux
 
 ### Option 1: Create via Telegram (Recommended)
 
@@ -217,20 +230,23 @@ Notifications are delivered to the topic bound to the session's window.
 ```bash
 tmux attach -t ccbot
 tmux new-window -n myproject -c ~/Code/myproject
-# Then start Claude Code in the new window
+# Then start your CLI in the new window
 claude
+# or
+codex
 ```
 
-The window must be in the `ccbot` tmux session (configurable via `TMUX_SESSION_NAME`). The hook will automatically register it in `session_map.json` when Claude starts.
+The window must be in the `ccbot` tmux session (configurable via `TMUX_SESSION_NAME`). Claude provider uses hooks for session mapping; Codex provider uses rollout mapping.
 
 ## Data Storage
 
 | Path                            | Description                                                             |
 | ------------------------------- | ----------------------------------------------------------------------- |
 | `$CCBOT_DIR/state.json`         | Thread bindings, window states, display names, and per-user read offsets |
-| `$CCBOT_DIR/session_map.json`   | Hook-generated `{tmux_session:window_id: {session_id, cwd, window_name}}` mappings |
+| `$CCBOT_DIR/session_map.json`   | Provider mappings `{tmux_session:window_id: {session_id, cwd, ...}}` |
 | `$CCBOT_DIR/monitor_state.json` | Monitor byte offsets per session (prevents duplicate notifications)     |
 | `~/.claude/projects/`           | Claude Code session data (read-only)                                    |
+| `~/.codex/sessions/`            | Codex rollout session logs (read-only)                                  |
 
 ## File Structure
 

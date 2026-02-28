@@ -2,10 +2,12 @@
 
 Handles two execution modes:
   1. `ccbot hook` — delegates to hook.hook_main() for Claude Code hook processing.
-  2. Default — configures logging, initializes tmux session, and starts the
+  2. `ccbot codex-map` — updates session_map.json for Codex rollout sessions.
+  3. Default — configures logging, initializes tmux session, and starts the
      Telegram bot polling loop via bot.create_bot().
 """
 
+import asyncio
 import logging
 import sys
 
@@ -16,6 +18,13 @@ def main() -> None:
         from .hook import hook_main
 
         hook_main()
+        return
+
+    if len(sys.argv) > 1 and sys.argv[1] == "codex-map":
+        from .codex_mapper import codex_session_mapper
+
+        changed = asyncio.run(codex_session_mapper.sync_session_map())
+        print("updated" if changed else "no changes")
         return
 
     logging.basicConfig(
@@ -48,7 +57,8 @@ def main() -> None:
     from .tmux_manager import tmux_manager
 
     logger.info("Allowed users: %s", config.allowed_users)
-    logger.info("Claude projects path: %s", config.claude_projects_path)
+    logger.info("Provider: %s", config.provider)
+    logger.info("Provider data root: %s", config.provider_data_root)
 
     # Ensure tmux session exists
     session = tmux_manager.get_or_create_session()

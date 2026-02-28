@@ -1,17 +1,17 @@
 """Telegram bot handlers — the main UI layer of CCBot.
 
 Registers all command/callback/message handlers and manages the bot lifecycle.
-Each Telegram topic maps 1:1 to a tmux window (Claude session).
+Each Telegram topic maps 1:1 to a tmux window (agent session).
 
 Core responsibilities:
   - Command handlers: /start, /history, /screenshot, /esc, /kill, /unbind,
-    plus forwarding unknown /commands to Claude Code via tmux.
+    plus forwarding unknown /commands to the active agent via tmux.
   - Callback query handler: directory browser, history pagination,
     interactive UI navigation, screenshot refresh.
   - Topic-based routing: each named topic binds to one tmux window.
     Unbound topics trigger the directory browser to create a new session.
   - Photo handling: photos sent by user are downloaded and forwarded
-    to Claude Code as file paths (photo_handler).
+    to the active agent as file paths (photo_handler).
   - Automatic cleanup: closing a topic kills the associated window
     (topic_closed_handler). Unsupported content (stickers, voice, etc.)
     is rejected with a warning (unsupported_content_handler).
@@ -56,6 +56,7 @@ from telegram.ext import (
 )
 
 from .config import config
+from .codex_mapper import codex_session_mapper
 from .handlers.callback_data import (
     CB_ASK_DOWN,
     CB_ASK_ENTER,
@@ -135,8 +136,8 @@ session_monitor: SessionMonitor | None = None
 # Status polling task
 _status_poll_task: asyncio.Task | None = None
 
-# Claude Code commands shown in bot menu (forwarded via tmux)
-CC_COMMANDS: dict[str, str] = {
+# Claude commands shown in bot menu (forwarded via tmux)
+CLAUDE_COMMANDS: dict[str, str] = {
     "clear": "↗ Clear conversation history",
     "compact": "↗ Compact conversation context",
     "cost": "↗ Show token/cost usage",
@@ -144,6 +145,12 @@ CC_COMMANDS: dict[str, str] = {
     "memory": "↗ Edit CLAUDE.md",
     "model": "↗ Switch AI model",
 }
+
+
+def _provider_menu_commands() -> dict[str, str]:
+    if config.provider == "claude":
+        return CLAUDE_COMMANDS
+    return {}
 
 
 def is_user_allowed(user_id: int | None) -> bool:
@@ -178,7 +185,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     if update.message:
         await safe_reply(
             update.message,
-            "🤖 *Claude Code Monitor*\n\n"
+            f"🤖 *{config.agent_name} Monitor*\n\n"
             "Each topic is a session. Create a new topic to start.",
         )
 
@@ -237,7 +244,7 @@ async def screenshot_command(
 
 
 async def unbind_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Unbind this topic from its Claude session without killing the window."""
+    """Unbind this topic from its session without killing the window."""
     user = update.effective_user
     if not user or not is_user_allowed(user.id):
         return
@@ -261,13 +268,13 @@ async def unbind_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     await safe_reply(
         update.message,
         f"✅ Topic unbound from window '{display}'.\n"
-        "The Claude session is still running in tmux.\n"
+        f"The {config.agent_name} session is still running in tmux.\n"
         "Send a message to bind to a new session.",
     )
 
 
 async def esc_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Send Escape key to interrupt Claude."""
+    """Send Escape key to interrupt the active agent."""
     user = update.effective_user
     if not user or not is_user_allowed(user.id):
         return
@@ -292,7 +299,14 @@ async def esc_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
 
 async def usage_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Fetch Claude Code usage stats from TUI and send to Telegram."""
+    """Fetch usage stats from TUI and send to Telegram."""
+    if not config.supports_usage_command:
+        if update.message:
+            await safe_reply(
+                update.message,
+                f"❌ /usage is not supported for provider '{config.provider}'.",
+            )
+        return
     user = update.effective_user
     if not user or not is_user_allowed(user.id):
         return
@@ -310,7 +324,7 @@ async def usage_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         await safe_reply(update.message, f"Window '{wid}' no longer exists.")
         return
 
-    # Send /usage command to Claude Code TUI
+    # Send /usage command to TUI
     await tmux_manager.send_keys(w.window_id, "/usage")
     # Wait for the modal to render
     await asyncio.sleep(2.0)
@@ -434,7 +448,7 @@ async def topic_closed_handler(
 async def forward_command_handler(
     update: Update, context: ContextTypes.DEFAULT_TYPE
 ) -> None:
-    """Forward any non-bot command as a slash command to the active Claude Code session."""
+    """Forward non-bot slash commands to the active session."""
     user = update.effective_user
     if not user or not is_user_allowed(user.id):
         return
@@ -453,6 +467,12 @@ async def forward_command_handler(
     cmd_text = update.message.text or ""
     # The full text is already a slash command like "/clear" or "/compact foo"
     cc_slash = cmd_text.split("@")[0]  # strip bot mention
+    if not config.forward_slash_commands:
+        await safe_reply(
+            update.message,
+            f"❌ Slash command forwarding is disabled for provider '{config.provider}'.",
+        )
+        return
     wid = session_manager.resolve_window_for_thread(user.id, thread_id)
     if not wid:
         await safe_reply(update.message, "❌ No session bound to this topic.")
@@ -474,7 +494,7 @@ async def forward_command_handler(
         await safe_reply(update.message, f"⚡ [{display}] Sent: {cc_slash}")
         # If /clear command was sent, clear the session association
         # so we can detect the new session after first message
-        if cc_slash.strip().lower() == "/clear":
+        if config.provider == "claude" and cc_slash.strip().lower() == "/clear":
             logger.info("Clearing session for window %s after /clear", display)
             session_manager.clear_window_session(wid)
 
@@ -499,7 +519,7 @@ async def unsupported_content_handler(
     logger.debug("Unsupported content from user %d", user.id)
     await safe_reply(
         update.message,
-        "⚠ Only text messages are supported. Images, stickers, voice, and other media cannot be forwarded to Claude Code.",
+        "⚠ Only text messages are supported. Images, stickers, voice, and other media cannot be forwarded as prompt text.",
     )
 
 
@@ -509,7 +529,7 @@ _IMAGES_DIR.mkdir(parents=True, exist_ok=True)
 
 
 async def photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle photos sent by the user: download and forward path to Claude Code."""
+    """Handle photos sent by the user: download and forward file path."""
     user = update.effective_user
     if not user or not is_user_allowed(user.id):
         if update.message:
@@ -560,7 +580,7 @@ async def photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     file_path = _IMAGES_DIR / filename
     await tg_file.download_to_drive(file_path)
 
-    # Build the message to send to Claude Code
+    # Build the message to send to the agent
     caption = update.message.caption or ""
     if caption:
         text_to_send = f"{caption}\n\n(image attached: {file_path})"
@@ -576,7 +596,7 @@ async def photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         return
 
     # Confirm to user
-    await safe_reply(update.message, "📷 Image sent to Claude Code.")
+    await safe_reply(update.message, f"📷 Image sent to {config.agent_name}.")
 
 
 # Active bash capture tasks: (user_id, thread_id) → asyncio.Task
@@ -1029,8 +1049,14 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
                 user.id,
                 pending_thread_id,
             )
-            # Wait for Claude Code's SessionStart hook to register in session_map
-            await session_manager.wait_for_session_map_entry(created_wid)
+            # Wait for a window->session mapping to appear in session_map.
+            # Claude uses hook-based SessionStart mapping, Codex uses mapper sync.
+            if config.provider == "codex":
+                await codex_session_mapper.sync_session_map()
+            await session_manager.wait_for_session_map_entry(
+                created_wid,
+                timeout=10.0 if config.provider == "codex" else 5.0,
+            )
 
             if pending_thread_id is not None:
                 # Thread bind flow: bind thread to newly created window
@@ -1432,7 +1458,7 @@ async def handle_new_message(msg: NewMessage, bot: Bot) -> None:
             queue = get_message_queue(user_id)
             if queue:
                 await queue.join()
-            # Wait briefly for Claude Code to render the question UI
+            # Wait briefly for the agent UI to render
             await asyncio.sleep(0.3)
             handled = await handle_interactive_ui(bot, user_id, wid, thread_id)
             if handled:
@@ -1501,13 +1527,14 @@ async def post_init(application: Application) -> None:
         BotCommand("start", "Show welcome message"),
         BotCommand("history", "Message history for this topic"),
         BotCommand("screenshot", "Terminal screenshot with control keys"),
-        BotCommand("esc", "Send Escape to interrupt Claude"),
+        BotCommand("esc", "Send Escape to interrupt active session"),
         BotCommand("kill", "Kill session and delete topic"),
         BotCommand("unbind", "Unbind topic from session (keeps window running)"),
-        BotCommand("usage", "Show Claude Code usage remaining"),
     ]
-    # Add Claude Code slash commands
-    for cmd_name, desc in CC_COMMANDS.items():
+    if config.supports_usage_command:
+        bot_commands.append(BotCommand("usage", "Show usage remaining"))
+    # Add provider slash commands
+    for cmd_name, desc in _provider_menu_commands().items():
         bot_commands.append(BotCommand(cmd_name, desc))
 
     await application.bot.set_my_commands(bot_commands)
@@ -1577,7 +1604,8 @@ def create_bot() -> Application:
     application.add_handler(CommandHandler("screenshot", screenshot_command))
     application.add_handler(CommandHandler("esc", esc_command))
     application.add_handler(CommandHandler("unbind", unbind_command))
-    application.add_handler(CommandHandler("usage", usage_command))
+    if config.supports_usage_command:
+        application.add_handler(CommandHandler("usage", usage_command))
     application.add_handler(CallbackQueryHandler(callback_handler))
     # Topic closed event — auto-kill associated window
     application.add_handler(
@@ -1586,12 +1614,12 @@ def create_bot() -> Application:
             topic_closed_handler,
         )
     )
-    # Forward any other /command to Claude Code
+    # Forward any other /command to the active session
     application.add_handler(MessageHandler(filters.COMMAND, forward_command_handler))
     application.add_handler(
         MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler)
     )
-    # Photos: download and forward file path to Claude Code
+    # Photos: download and forward file path to the active session
     application.add_handler(MessageHandler(filters.PHOTO, photo_handler))
     # Catch-all: non-text content (stickers, voice, etc.)
     application.add_handler(

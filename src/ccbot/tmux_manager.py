@@ -340,7 +340,7 @@ class TmuxManager:
         Args:
             work_dir: Working directory for the new window
             window_name: Optional window name (defaults to directory name)
-            start_claude: Whether to start claude command
+            start_claude: Whether to start configured agent command
 
         Returns:
             Tuple of (success, message, window_name, window_id)
@@ -374,11 +374,11 @@ class TmuxManager:
 
                 wid = window.window_id or ""
 
-                # Start Claude Code if requested
+                # Start agent command if requested
                 if start_claude:
                     pane = window.active_pane
                     if pane:
-                        pane.send_keys(config.claude_command, enter=True)
+                        pane.send_keys(config.agent_command, enter=True)
 
                 logger.info(
                     "Created window '%s' (id=%s) at %s",

@@ -58,8 +58,30 @@ class Config:
         self.tmux_session_name = os.getenv("TMUX_SESSION_NAME", "ccbot")
         self.tmux_main_window_name = "__main__"
 
-        # Claude command to run in new windows
-        self.claude_command = os.getenv("CLAUDE_COMMAND", "claude")
+        provider = os.getenv("CCBOT_PROVIDER", "claude").strip().lower()
+        if provider not in ("claude", "codex"):
+            raise ValueError("CCBOT_PROVIDER must be one of: claude, codex")
+        self.provider = provider
+
+        # Agent command to run in new windows.
+        # Backward compatible:
+        #   - CLAUDE_COMMAND still works for provider=claude
+        #   - CCBOT_AGENT_COMMAND overrides provider defaults
+        default_cmd = "codex" if self.provider == "codex" else "claude"
+        self.agent_command = os.getenv("CCBOT_AGENT_COMMAND") or os.getenv(
+            "CLAUDE_COMMAND", default_cmd
+        )
+        # Keep old attribute name for compatibility in the existing code path.
+        self.claude_command = self.agent_command
+
+        # Provider capabilities and UI labels
+        self.agent_name = "Codex CLI" if self.provider == "codex" else "Claude Code"
+        self.supports_usage_command = self.provider == "claude"
+        self.supports_claude_interactive_ui = self.provider == "claude"
+        slash_default = "true" if self.provider == "claude" else "false"
+        self.forward_slash_commands = (
+            os.getenv("CCBOT_FORWARD_SLASH", slash_default).lower() == "true"
+        )
 
         # All state files live under config_dir
         self.state_file = self.config_dir / "state.json"
@@ -79,6 +101,17 @@ class Config:
         else:
             self.claude_projects_path = Path.home() / ".claude" / "projects"
 
+        # Codex rollout logs root
+        self.codex_sessions_path = Path(
+            os.getenv("CCBOT_CODEX_SESSIONS_PATH", str(Path.home() / ".codex" / "sessions"))
+        )
+        self.provider_data_root = (
+            self.codex_sessions_path
+            if self.provider == "codex"
+            else self.claude_projects_path
+        )
+        self.provider_supports_hook = self.provider == "claude"
+
         self.monitor_poll_interval = float(os.getenv("MONITOR_POLL_INTERVAL", "2.0"))
 
         # Display user messages in history and real-time notifications
@@ -92,12 +125,13 @@ class Config:
 
         logger.debug(
             "Config initialized: dir=%s, token=%s..., allowed_users=%d, "
-            "tmux_session=%s, claude_projects_path=%s",
+            "provider=%s, tmux_session=%s, data_root=%s",
             self.config_dir,
             self.telegram_bot_token[:8],
             len(self.allowed_users),
+            self.provider,
             self.tmux_session_name,
-            self.claude_projects_path,
+            self.provider_data_root,
         )
 
     def is_user_allowed(self, user_id: int) -> bool:

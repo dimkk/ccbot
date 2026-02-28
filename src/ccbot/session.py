@@ -52,6 +52,7 @@ class WindowState:
     session_id: str = ""
     cwd: str = ""
     window_name: str = ""
+    file_path: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         d: dict[str, Any] = {
@@ -60,6 +61,8 @@ class WindowState:
         }
         if self.window_name:
             d["window_name"] = self.window_name
+        if self.file_path:
+            d["file_path"] = self.file_path
         return d
 
     @classmethod
@@ -68,6 +71,7 @@ class WindowState:
             session_id=data.get("session_id", ""),
             cwd=data.get("cwd", ""),
             window_name=data.get("window_name", ""),
+            file_path=data.get("file_path", ""),
         )
 
 
@@ -471,6 +475,10 @@ class SessionManager:
                         content = await f.read()
                     session_map = json.loads(content)
                     info = session_map.get(key, {})
+                    provider = info.get("provider", "claude")
+                    if provider != config.provider:
+                        await asyncio.sleep(interval)
+                        continue
                     if info.get("session_id"):
                         # Found — load into window_states immediately
                         logger.debug(
@@ -511,6 +519,8 @@ class SessionManager:
             # Only process entries for our tmux session
             if not key.startswith(prefix):
                 continue
+            if info.get("provider", "claude") != config.provider:
+                continue
             window_id = key[len(prefix) :]
             if not self._is_window_id(window_id):
                 continue
@@ -518,10 +528,15 @@ class SessionManager:
             new_sid = info.get("session_id", "")
             new_cwd = info.get("cwd", "")
             new_wname = info.get("window_name", "")
+            new_fp = info.get("file_path", "")
             if not new_sid:
                 continue
             state = self.get_window_state(window_id)
-            if state.session_id != new_sid or state.cwd != new_cwd:
+            if (
+                state.session_id != new_sid
+                or state.cwd != new_cwd
+                or state.file_path != new_fp
+            ):
                 logger.info(
                     "Session map: window_id %s updated sid=%s, cwd=%s",
                     window_id,
@@ -530,6 +545,7 @@ class SessionManager:
                 )
                 state.session_id = new_sid
                 state.cwd = new_cwd
+                state.file_path = new_fp
                 changed = True
             # Update display name
             if new_wname:
@@ -563,27 +579,38 @@ class SessionManager:
         self._save_state()
         logger.info("Cleared session for window_id %s", window_id)
 
-    def _build_session_file_path(self, session_id: str, cwd: str) -> Path | None:
+    def _build_session_file_path(
+        self, session_id: str, cwd: str, file_path: str = ""
+    ) -> Path | None:
         """Build the direct file path for a session from session_id and cwd."""
+        if file_path:
+            return Path(file_path)
         if not session_id or not cwd:
+            return None
+        if config.provider == "codex":
             return None
         # Encode cwd: /data/code/ccbot -> -data-code-ccbot
         encoded_cwd = cwd.replace("/", "-")
         return config.claude_projects_path / encoded_cwd / f"{session_id}.jsonl"
 
     async def _get_session_direct(
-        self, session_id: str, cwd: str
+        self, session_id: str, cwd: str, file_path: str = ""
     ) -> ClaudeSession | None:
         """Get a ClaudeSession directly from session_id and cwd (no scanning)."""
-        file_path = self._build_session_file_path(session_id, cwd)
+        resolved_path = self._build_session_file_path(session_id, cwd, file_path)
 
         # Fallback: glob search if direct path doesn't exist
-        if not file_path or not file_path.exists():
-            pattern = f"*/{session_id}.jsonl"
-            matches = list(config.claude_projects_path.glob(pattern))
+        if not resolved_path or not resolved_path.exists():
+            if config.provider == "codex":
+                matches = list(
+                    config.codex_sessions_path.rglob(f"rollout-*{session_id}.jsonl")
+                )
+            else:
+                pattern = f"*/{session_id}.jsonl"
+                matches = list(config.claude_projects_path.glob(pattern))
             if matches:
-                file_path = matches[0]
-                logger.debug("Found session via glob: %s", file_path)
+                resolved_path = matches[0]
+                logger.debug("Found session via glob: %s", resolved_path)
             else:
                 return None
 
@@ -592,7 +619,7 @@ class SessionManager:
         last_user_msg = ""
         message_count = 0
         try:
-            async with aiofiles.open(file_path, "r", encoding="utf-8") as f:
+            async with aiofiles.open(resolved_path, "r", encoding="utf-8") as f:
                 async for line in f:
                     line = line.strip()
                     if not line:
@@ -622,7 +649,7 @@ class SessionManager:
             session_id=session_id,
             summary=summary,
             message_count=message_count,
-            file_path=str(file_path),
+            file_path=str(resolved_path),
         )
 
     # --- Window → Session resolution ---
@@ -638,7 +665,11 @@ class SessionManager:
         if not state.session_id or not state.cwd:
             return None
 
-        session = await self._get_session_direct(state.session_id, state.cwd)
+        session = await self._get_session_direct(
+            state.session_id,
+            state.cwd,
+            state.file_path,
+        )
         if session:
             return session
 
@@ -651,6 +682,7 @@ class SessionManager:
         )
         state.session_id = ""
         state.cwd = ""
+        state.file_path = ""
         self._save_state()
         return None
 

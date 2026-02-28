@@ -21,6 +21,7 @@ from typing import Any, Callable, Awaitable
 import aiofiles
 
 from .config import config
+from .codex_mapper import codex_session_mapper
 from .monitor_state import MonitorState, TrackedSession
 from .tmux_manager import tmux_manager
 from .transcript_parser import TranscriptParser
@@ -31,7 +32,7 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class SessionInfo:
-    """Information about a Claude Code session."""
+    """Information about an agent session transcript file."""
 
     session_id: str
     file_path: Path
@@ -52,7 +53,7 @@ class NewMessage:
 
 
 class SessionMonitor:
-    """Monitors Claude Code sessions for new assistant messages.
+    """Monitors sessions for new assistant messages.
 
     Uses simple async polling with aiofiles for non-blocking I/O.
     Emits both intermediate and complete assistant messages.
@@ -65,7 +66,7 @@ class SessionMonitor:
         state_file: Path | None = None,
     ):
         self.projects_path = (
-            projects_path if projects_path is not None else config.claude_projects_path
+            projects_path if projects_path is not None else config.provider_data_root
         )
         self.poll_interval = (
             poll_interval if poll_interval is not None else config.monitor_poll_interval
@@ -103,6 +104,9 @@ class SessionMonitor:
 
     async def scan_projects(self) -> list[SessionInfo]:
         """Scan projects that have active tmux windows."""
+        if config.provider == "codex":
+            return await self._scan_codex_from_session_map()
+
         active_cwds = await self._get_active_cwds()
         if not active_cwds:
             return []
@@ -191,6 +195,28 @@ class SessionMonitor:
             except OSError as e:
                 logger.debug(f"Error scanning jsonl files in {project_dir}: {e}")
 
+        return sessions
+
+    async def _scan_codex_from_session_map(self) -> list[SessionInfo]:
+        """Read codex transcript paths from session_map.json entries."""
+        entries = await self._load_current_session_map_entries()
+        sessions: list[SessionInfo] = []
+        seen: set[str] = set()
+        for info in entries.values():
+            session_id = info.get("session_id", "")
+            if not session_id or session_id in seen:
+                continue
+            file_path_raw = info.get("file_path", "")
+            file_path = Path(file_path_raw) if file_path_raw else None
+            if file_path is None or not file_path.exists():
+                matches = list(
+                    config.codex_sessions_path.rglob(f"rollout-*{session_id}.jsonl")
+                )
+                file_path = matches[0] if matches else None
+            if file_path is None or not file_path.exists():
+                continue
+            seen.add(session_id)
+            sessions.append(SessionInfo(session_id=session_id, file_path=file_path))
         return sessions
 
     async def _read_new_lines(
@@ -372,8 +398,8 @@ class SessionMonitor:
         self.state.save_if_dirty()
         return new_messages
 
-    async def _load_current_session_map(self) -> dict[str, str]:
-        """Load current session_map and return window_key -> session_id mapping.
+    async def _load_current_session_map_entries(self) -> dict[str, dict[str, str]]:
+        """Load current session_map and return window_key -> mapping info.
 
         Keys in session_map are formatted as "tmux_session:window_id"
         (e.g. "ccbot:@12"). Old-format keys ("ccbot:window_name") are also
@@ -381,7 +407,7 @@ class SessionMonitor:
         to be monitored until the hook re-fires with new format.
         Only entries matching our tmux_session_name are processed.
         """
-        window_to_session: dict[str, str] = {}
+        window_to_info: dict[str, dict[str, str]] = {}
         if config.session_map_file.exists():
             try:
                 async with aiofiles.open(config.session_map_file, "r") as f:
@@ -389,15 +415,37 @@ class SessionMonitor:
                 session_map = json.loads(content)
                 prefix = f"{config.tmux_session_name}:"
                 for key, info in session_map.items():
+                    if not isinstance(info, dict):
+                        continue
                     # Only process entries for our tmux session
                     if not key.startswith(prefix):
                         continue
+                    entry_provider = info.get("provider", "claude")
+                    if entry_provider != config.provider:
+                        continue
                     window_key = key[len(prefix) :]
                     session_id = info.get("session_id", "")
-                    if session_id:
-                        window_to_session[window_key] = session_id
+                    if not session_id:
+                        continue
+                    window_to_info[window_key] = {
+                        "session_id": session_id,
+                        "cwd": info.get("cwd", ""),
+                        "window_name": info.get("window_name", ""),
+                        "provider": entry_provider,
+                        "file_path": info.get("file_path", ""),
+                    }
             except (json.JSONDecodeError, OSError):
                 pass
+        return window_to_info
+
+    async def _load_current_session_map(self) -> dict[str, str]:
+        """Load current session_map and return window_key -> session_id mapping."""
+        entries = await self._load_current_session_map_entries()
+        window_to_session: dict[str, str] = {}
+        for window_key, info in entries.items():
+            session_id = info.get("session_id", "")
+            if session_id:
+                window_to_session[window_key] = session_id
         return window_to_session
 
     async def _cleanup_all_stale_sessions(self) -> None:
@@ -483,6 +531,9 @@ class SessionMonitor:
 
         while self._running:
             try:
+                if config.provider == "codex":
+                    await codex_session_mapper.sync_session_map()
+
                 # Load hook-based session map updates
                 await session_manager.load_session_map()
 
