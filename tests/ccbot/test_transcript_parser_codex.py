@@ -85,6 +85,57 @@ class TestCodexParseEntries:
         assert result[0].role == "user"
         assert result[0].text == "привет"
 
+    def test_parses_event_agent_message(self):
+        entries = [
+            {
+                "type": "event_msg",
+                "timestamp": "2026-02-28T20:41:59.885Z",
+                "payload": {"type": "agent_message", "message": "done"},
+            }
+        ]
+        result, _ = TranscriptParser.parse_entries(entries)
+        assert len(result) == 1
+        assert result[0].role == "assistant"
+        assert result[0].content_type == "text"
+        assert result[0].text == "done"
+
+    def test_parses_task_complete_last_agent_message(self):
+        entries = [
+            {
+                "type": "event_msg",
+                "timestamp": "2026-02-28T20:42:00.000Z",
+                "payload": {
+                    "type": "task_complete",
+                    "last_agent_message": "final summary",
+                },
+            }
+        ]
+        result, _ = TranscriptParser.parse_entries(entries)
+        assert len(result) == 1
+        assert result[0].role == "assistant"
+        assert result[0].content_type == "text"
+        assert result[0].text == "final summary"
+
+    def test_dedupes_reasoning_from_event_and_response_item(self):
+        entries = [
+            {
+                "type": "event_msg",
+                "timestamp": "2026-02-28T20:41:36.020Z",
+                "payload": {"type": "agent_reasoning", "text": "same thinking"},
+            },
+            {
+                "type": "response_item",
+                "timestamp": "2026-02-28T20:41:36.020Z",
+                "payload": {
+                    "type": "reasoning",
+                    "summary": [{"type": "summary_text", "text": "same thinking"}],
+                },
+            },
+        ]
+        result, _ = TranscriptParser.parse_entries(entries)
+        assert len(result) == 1
+        assert result[0].content_type == "thinking"
+
     def test_parses_codex_user_shell_command_as_local_command(self):
         text = (
             "<user_shell_command>\n"

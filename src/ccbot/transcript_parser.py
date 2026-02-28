@@ -543,6 +543,23 @@ class TranscriptParser:
     ) -> tuple[list[ParsedEntry], dict[str, PendingToolInfo]]:
         """Parse Codex rollout JSONL entries into ParsedEntry records."""
         result: list[ParsedEntry] = []
+
+        def _append_entry(entry: ParsedEntry) -> None:
+            """Append entry with light dedupe for duplicate Codex events."""
+            entry.text = entry.text.strip()
+            if not entry.text:
+                return
+            if result:
+                prev = result[-1]
+                if (
+                    prev.role == entry.role
+                    and prev.content_type == entry.content_type
+                    and prev.text == entry.text
+                    and prev.tool_use_id == entry.tool_use_id
+                ):
+                    return
+            result.append(entry)
+
         _carry_over = pending_tools is not None
         if pending_tools is None:
             pending_tools = {}
@@ -571,7 +588,7 @@ class TranscriptParser:
                         ).strip()
                         local_cmd_text = cls._parse_codex_user_shell_command(user_text)
                         if local_cmd_text:
-                            result.append(
+                            _append_entry(
                                 ParsedEntry(
                                     role="assistant",
                                     text=local_cmd_text,
@@ -584,7 +601,7 @@ class TranscriptParser:
                         payload.get("content", [])
                     ).strip()
                     if text:
-                        result.append(
+                        _append_entry(
                             ParsedEntry(
                                 role="assistant",
                                 text=text,
@@ -607,7 +624,7 @@ class TranscriptParser:
                                 text_parts.append(text)
                     thinking_text = "\n".join(text_parts).strip()
                     if thinking_text:
-                        result.append(
+                        _append_entry(
                             ParsedEntry(
                                 role="assistant",
                                 text=cls._format_expandable_quote(thinking_text),
@@ -637,7 +654,7 @@ class TranscriptParser:
                             tool_name=name,
                             input_data=args_data if name in ("Edit", "NotebookEdit") else None,
                         )
-                    result.append(
+                    _append_entry(
                         ParsedEntry(
                             role="assistant",
                             text=summary,
@@ -660,7 +677,7 @@ class TranscriptParser:
                         entry_text += "\n" + cls._format_tool_result_text(
                             output, tool_name
                         )
-                    result.append(
+                    _append_entry(
                         ParsedEntry(
                             role="assistant",
                             text=entry_text,
@@ -678,9 +695,20 @@ class TranscriptParser:
                 if event_type == "user_message":
                     text = str(payload.get("message", "")).strip()
                     if text:
-                        result.append(
+                        _append_entry(
                             ParsedEntry(
                                 role="user",
+                                text=text,
+                                content_type="text",
+                                timestamp=entry_timestamp,
+                            )
+                        )
+                elif event_type == "agent_message":
+                    text = str(payload.get("message", "")).strip()
+                    if text:
+                        _append_entry(
+                            ParsedEntry(
+                                role="assistant",
                                 text=text,
                                 content_type="text",
                                 timestamp=entry_timestamp,
@@ -689,7 +717,7 @@ class TranscriptParser:
                 elif event_type == "agent_reasoning":
                     text = str(payload.get("text", "")).strip()
                     if text:
-                        result.append(
+                        _append_entry(
                             ParsedEntry(
                                 role="assistant",
                                 text=cls._format_expandable_quote(text),
@@ -697,11 +725,23 @@ class TranscriptParser:
                                 timestamp=entry_timestamp,
                             )
                         )
+                elif event_type == "task_complete":
+                    # Fallback final text for turns where message payload is not emitted.
+                    text = str(payload.get("last_agent_message", "")).strip()
+                    if text:
+                        _append_entry(
+                            ParsedEntry(
+                                role="assistant",
+                                text=text,
+                                content_type="text",
+                                timestamp=entry_timestamp,
+                            )
+                        )
 
         remaining_pending = dict(pending_tools)
         if not _carry_over:
             for tool_id, tool_info in pending_tools.items():
-                result.append(
+                _append_entry(
                     ParsedEntry(
                         role="assistant",
                         text=tool_info.summary,
@@ -709,9 +749,6 @@ class TranscriptParser:
                         tool_use_id=tool_id,
                     )
                 )
-
-        for entry in result:
-            entry.text = entry.text.strip()
 
         return result, remaining_pending
 
