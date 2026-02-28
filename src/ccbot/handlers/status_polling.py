@@ -117,6 +117,9 @@ async def status_poll_loop(bot: Bot) -> None:
                 for user_id, thread_id, wid in list(
                     session_manager.iter_thread_bindings()
                 ):
+                    # Private chat binding (synthetic thread_id=0): no topic probe.
+                    if thread_id <= 0:
+                        continue
                     try:
                         await bot.unpin_all_forum_topic_messages(
                             chat_id=session_manager.resolve_chat_id(user_id, thread_id),
@@ -172,7 +175,7 @@ async def status_poll_loop(bot: Bot) -> None:
                         bot,
                         user_id,
                         wid,
-                        thread_id=thread_id,
+                        thread_id=thread_id or None,
                     )
                 except Exception as e:
                     logger.debug(

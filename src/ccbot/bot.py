@@ -170,6 +170,50 @@ def _get_thread_id(update: Update) -> int | None:
     return tid
 
 
+async def _ensure_private_window_binding(user_id: int) -> tuple[str | None, str]:
+    """Ensure private chat has a stable bound window (thread_id=0)."""
+    private_tid = 0
+    bound = session_manager.get_window_for_thread(user_id, private_tid)
+    if bound:
+        w = await tmux_manager.find_window_by_id(bound)
+        if w:
+            return bound, ""
+        session_manager.unbind_thread(user_id, private_tid)
+
+    # Reuse a stable named window if it already exists.
+    existing = await tmux_manager.find_window_by_name(config.tmux_session_name)
+    if existing:
+        session_manager.bind_thread(
+            user_id,
+            private_tid,
+            existing.window_id,
+            window_name=existing.window_name,
+        )
+        return existing.window_id, ""
+
+    # Otherwise create one in current cwd.
+    success, message, created_wname, created_wid = await tmux_manager.create_window(
+        str(Path.cwd()),
+        window_name=config.tmux_session_name,
+    )
+    if not success:
+        return None, message
+
+    if config.provider == "codex":
+        await codex_session_mapper.sync_session_map()
+    await session_manager.wait_for_session_map_entry(
+        created_wid,
+        timeout=10.0 if config.provider == "codex" else 5.0,
+    )
+    session_manager.bind_thread(
+        user_id,
+        private_tid,
+        created_wid,
+        window_name=created_wname,
+    )
+    return created_wid, ""
+
+
 # --- Command handlers ---
 
 
@@ -252,18 +296,23 @@ async def unbind_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         return
 
     thread_id = _get_thread_id(update)
-    if thread_id is None:
-        await safe_reply(update.message, "❌ This command only works in a topic.")
-        return
+    bind_tid = thread_id
+    if bind_tid is None:
+        chat = update.effective_chat
+        if chat and chat.type == "private":
+            bind_tid = 0
+        else:
+            await safe_reply(update.message, "❌ This command only works in a topic.")
+            return
 
-    wid = session_manager.get_window_for_thread(user.id, thread_id)
+    wid = session_manager.get_window_for_thread(user.id, bind_tid)
     if not wid:
         await safe_reply(update.message, "❌ No session bound to this topic.")
         return
 
     display = session_manager.get_display_name(wid)
-    session_manager.unbind_thread(user.id, thread_id)
-    await clear_topic_state(user.id, thread_id, context.bot, context.user_data)
+    session_manager.unbind_thread(user.id, bind_tid)
+    await clear_topic_state(user.id, bind_tid, context.bot, context.user_data)
 
     await safe_reply(
         update.message,
@@ -474,6 +523,11 @@ async def forward_command_handler(
         )
         return
     wid = session_manager.resolve_window_for_thread(user.id, thread_id)
+    if wid is None and chat and chat.type == "private":
+        wid, err = await _ensure_private_window_binding(user.id)
+        if wid is None:
+            await safe_reply(update.message, f"❌ {err or 'Failed to create session'}")
+            return
     if not wid:
         await safe_reply(update.message, "❌ No session bound to this topic.")
         return
@@ -541,29 +595,37 @@ async def photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
     chat = update.message.chat
     thread_id = _get_thread_id(update)
+    bind_tid = thread_id or 0
     if chat.type in ("group", "supergroup") and thread_id is not None:
         session_manager.set_group_chat_id(user.id, thread_id, chat.id)
 
-    # Must be in a named topic
-    if thread_id is None:
+    is_private_chat = chat.type == "private"
+
+    if thread_id is None and not is_private_chat:
         await safe_reply(
             update.message,
             "❌ Please use a named topic. Create a new topic to start a session.",
         )
         return
 
-    wid = session_manager.get_window_for_thread(user.id, thread_id)
-    if wid is None:
-        await safe_reply(
-            update.message,
-            "❌ No session bound to this topic. Send a text message first to create one.",
-        )
-        return
+    if is_private_chat:
+        wid, err = await _ensure_private_window_binding(user.id)
+        if wid is None:
+            await safe_reply(update.message, f"❌ {err or 'Failed to create session'}")
+            return
+    else:
+        wid = session_manager.get_window_for_thread(user.id, thread_id)
+        if wid is None:
+            await safe_reply(
+                update.message,
+                "❌ No session bound to this topic. Send a text message first to create one.",
+            )
+            return
 
     w = await tmux_manager.find_window_by_id(wid)
     if not w:
         display = session_manager.get_display_name(wid)
-        session_manager.unbind_thread(user.id, thread_id)
+        session_manager.unbind_thread(user.id, bind_tid)
         await safe_reply(
             update.message,
             f"❌ Window '{display}' no longer exists. Binding removed.\n"
@@ -599,11 +661,11 @@ async def photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     await safe_reply(update.message, f"📷 Image sent to {config.agent_name}.")
 
 
-# Active bash capture tasks: (user_id, thread_id) → asyncio.Task
-_bash_capture_tasks: dict[tuple[int, int], asyncio.Task[None]] = {}
+# Active bash capture tasks: (user_id, thread_id_or_none) -> asyncio.Task
+_bash_capture_tasks: dict[tuple[int, int | None], asyncio.Task[None]] = {}
 
 
-def _cancel_bash_capture(user_id: int, thread_id: int) -> None:
+def _cancel_bash_capture(user_id: int, thread_id: int | None) -> None:
     """Cancel any running bash capture for this topic."""
     key = (user_id, thread_id)
     task = _bash_capture_tasks.pop(key, None)
@@ -614,7 +676,7 @@ def _cancel_bash_capture(user_id: int, thread_id: int) -> None:
 async def _capture_bash_output(
     bot: Bot,
     user_id: int,
-    thread_id: int,
+    thread_id: int | None,
     window_id: str,
     command: str,
 ) -> None:
@@ -655,11 +717,14 @@ async def _capture_bash_output(
 
             if msg_id is None:
                 # First capture — send a new message
+                send_kwargs: dict[str, int] = {}
+                if thread_id is not None:
+                    send_kwargs["message_thread_id"] = thread_id
                 sent = await send_with_fallback(
                     bot,
                     chat_id,
                     output,
-                    message_thread_id=thread_id,
+                    **send_kwargs,  # type: ignore[arg-type]
                 )
                 if sent:
                     msg_id = sent.message_id
@@ -702,11 +767,12 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         return
 
     thread_id = _get_thread_id(update)
+    chat = update.effective_chat
+    is_private_chat = bool(chat and chat.type == "private")
 
     # Capture group chat_id for supergroup forum topic routing.
     # Required: Telegram Bot API needs group chat_id (not user_id) to send
     # messages with message_thread_id. Do NOT remove — see session.py docs.
-    chat = update.effective_chat
     if chat and chat.type in ("group", "supergroup"):
         session_manager.set_group_chat_id(user.id, thread_id, chat.id)
 
@@ -743,15 +809,21 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         context.user_data.pop("_pending_thread_id", None)
         context.user_data.pop("_pending_thread_text", None)
 
-    # Must be in a named topic
-    if thread_id is None:
+    # Must be in a named topic unless private-chat mode is used.
+    if thread_id is None and not is_private_chat:
         await safe_reply(
             update.message,
             "❌ Please use a named topic. Create a new topic to start a session.",
         )
         return
 
-    wid = session_manager.get_window_for_thread(user.id, thread_id)
+    if is_private_chat:
+        wid, err = await _ensure_private_window_binding(user.id)
+        if wid is None:
+            await safe_reply(update.message, f"❌ {err or 'Failed to create session'}")
+            return
+    else:
+        wid = session_manager.get_window_for_thread(user.id, thread_id)
     if wid is None:
         # Unbound topic — check for unbound windows first
         all_windows = await tmux_manager.list_windows()
@@ -813,7 +885,7 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             user.id,
             thread_id,
         )
-        session_manager.unbind_thread(user.id, thread_id)
+        session_manager.unbind_thread(user.id, thread_id or 0)
         await safe_reply(
             update.message,
             f"❌ Window '{display}' no longer exists. Binding removed.\n"

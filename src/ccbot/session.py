@@ -756,10 +756,11 @@ class SessionManager:
     ) -> str | None:
         """Resolve the tmux window_id for a user's thread.
 
-        Returns None if thread_id is None or the thread is not bound.
+        For private chats (thread_id=None), falls back to the synthetic
+        binding key 0.
         """
         if thread_id is None:
-            return None
+            return self.get_window_for_thread(user_id, 0)
         return self.get_window_for_thread(user_id, thread_id)
 
     def iter_thread_bindings(self) -> Iterator[tuple[int, int, str]]:
@@ -775,16 +776,17 @@ class SessionManager:
     async def find_users_for_session(
         self,
         session_id: str,
-    ) -> list[tuple[int, str, int]]:
+    ) -> list[tuple[int, str, int | None]]:
         """Find all users whose thread-bound window maps to the given session_id.
 
         Returns list of (user_id, window_id, thread_id) tuples.
+        Private bindings use thread_id=None.
         """
-        result: list[tuple[int, str, int]] = []
+        result: list[tuple[int, str, int | None]] = []
         for user_id, thread_id, window_id in self.iter_thread_bindings():
             resolved = await self.resolve_session_for_window(window_id)
             if resolved and resolved.session_id == session_id:
-                result.append((user_id, window_id, thread_id))
+                result.append((user_id, window_id, thread_id or None))
         return result
 
     # --- Tmux helpers ---

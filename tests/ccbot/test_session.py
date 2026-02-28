@@ -109,8 +109,14 @@ class TestWindowState:
 
 
 class TestResolveWindowForThread:
-    def test_none_thread_id_returns_none(self, mgr: SessionManager) -> None:
+    def test_none_thread_id_without_private_binding_returns_none(
+        self, mgr: SessionManager
+    ) -> None:
         assert mgr.resolve_window_for_thread(100, None) is None
+
+    def test_none_thread_id_uses_private_binding(self, mgr: SessionManager) -> None:
+        mgr.bind_thread(100, 0, "@9")
+        assert mgr.resolve_window_for_thread(100, None) == "@9"
 
     def test_unbound_thread_returns_none(self, mgr: SessionManager) -> None:
         assert mgr.resolve_window_for_thread(100, 42) is None
