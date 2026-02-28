@@ -166,6 +166,13 @@ class CodexSessionMapper:
             key=lambda m: (m.file_mtime, m.started_ts),
             reverse=True,
         )
+        preferred_sid = (config.codex_resume_session_id or "").strip()
+        preferred_meta: CodexSessionMeta | None = None
+        if preferred_sid:
+            for meta in all_metas:
+                if meta.session_id == preferred_sid:
+                    preferred_meta = meta
+                    break
 
         live_wids = {w.window_id for w in windows}
         assigned_session_ids: set[str] = set()
@@ -188,8 +195,15 @@ class CodexSessionMapper:
             candidates = by_cwd.get(norm_cwd, [])
 
             chosen: CodexSessionMeta | None = None
+            if (
+                preferred_meta is not None
+                and w.window_name == config.tmux_session_name
+                and preferred_meta.session_id not in assigned_session_ids
+            ):
+                chosen = preferred_meta
+
             existing_sid = existing.get("session_id", "")
-            if existing_sid:
+            if chosen is None and existing_sid:
                 for meta in all_metas:
                     if meta.session_id == existing_sid:
                         chosen = meta

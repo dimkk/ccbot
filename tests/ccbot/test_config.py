@@ -53,9 +53,19 @@ class TestConfigValid:
         cfg = Config()
         assert cfg.provider == "codex"
         assert cfg.agent_command == "codex"
+        assert cfg.codex_resume_session_id == ""
         assert cfg.supports_usage_command is False
         assert cfg.forward_slash_commands is False
         assert cfg.provider_data_root == cfg.codex_sessions_path
+
+    def test_codex_resume_session_id_from_agent_command(self, monkeypatch):
+        monkeypatch.setenv("CCBOT_PROVIDER", "codex")
+        monkeypatch.setenv(
+            "CCBOT_AGENT_COMMAND",
+            "codex resume 019c9eef-c5f7-7dc2-9e92-de59a1c3cd28",
+        )
+        cfg = Config()
+        assert cfg.codex_resume_session_id == "019c9eef-c5f7-7dc2-9e92-de59a1c3cd28"
 
 
 @pytest.mark.usefixtures("_base_env")

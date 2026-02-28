@@ -10,6 +10,7 @@ Key class: Config (singleton instantiated as `config`).
 
 import logging
 import os
+import re
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -17,6 +18,17 @@ from dotenv import load_dotenv
 from .utils import ccbot_dir
 
 logger = logging.getLogger(__name__)
+
+
+def _extract_codex_resume_session_id(command: str) -> str:
+    """Extract session id from a command containing `resume <session_id>`."""
+    if not command:
+        return ""
+
+    match = re.search(r"(?:^|\s)resume\s+([0-9a-fA-F-]{8,})\b", command)
+    if match:
+        return match.group(1)
+    return ""
 
 
 class Config:
@@ -70,6 +82,11 @@ class Config:
         default_cmd = "codex" if self.provider == "codex" else "claude"
         self.agent_command = os.getenv("CCBOT_AGENT_COMMAND") or os.getenv(
             "CLAUDE_COMMAND", default_cmd
+        )
+        self.codex_resume_session_id = (
+            _extract_codex_resume_session_id(self.agent_command)
+            if self.provider == "codex"
+            else ""
         )
         # Keep old attribute name for compatibility in the existing code path.
         self.claude_command = self.agent_command

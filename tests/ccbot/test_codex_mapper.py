@@ -1,6 +1,7 @@
 """Tests for CodexSessionMapper."""
 
 import json
+import os
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -84,3 +85,53 @@ class TestCodexSessionMapper:
         assert changed is True
         data = json.loads(map_file.read_text())
         assert "ccbot:@99" not in data
+
+    @pytest.mark.asyncio
+    async def test_prefers_resume_session_id_for_main_window(self, tmp_path, monkeypatch):
+        sessions_root = tmp_path / "sessions"
+        map_file = tmp_path / "session_map.json"
+        ccbot_cwd = str((tmp_path / "ccbot").resolve())
+        resume_sid = "019c9eef-c5f7-7dc2-9e92-de59a1c3cd28"
+        other_sid = "019ca375-fbf1-7e20-aff6-38003fd36889"
+
+        resume_path = (
+            sessions_root / "2026/02/27" / f"rollout-2026-02-27T14-50-39-{resume_sid}.jsonl"
+        )
+        other_path = (
+            sessions_root / "2026/02/28" / f"rollout-2026-02-28T11-55-44-{other_sid}.jsonl"
+        )
+        _write_rollout(
+            resume_path,
+            resume_sid,
+            str((tmp_path / "opticlaw").resolve()),
+            "2026-02-27T14:50:39Z",
+        )
+        _write_rollout(
+            other_path,
+            other_sid,
+            ccbot_cwd,
+            "2026-02-28T11:55:44Z",
+        )
+        os.utime(resume_path, (1700000000, 1700000000))
+        os.utime(other_path, (1800000000, 1800000000))
+
+        mapper = CodexSessionMapper(sessions_root=sessions_root, session_map_file=map_file)
+        windows = [
+            TmuxWindow(
+                window_id="@3",
+                window_name="ccbot",
+                cwd=ccbot_cwd,
+                pane_current_command="node",
+            )
+        ]
+
+        monkeypatch.setattr("ccbot.codex_mapper.config.codex_resume_session_id", resume_sid)
+        monkeypatch.setattr("ccbot.codex_mapper.config.tmux_session_name", "ccbot")
+
+        with patch("ccbot.codex_mapper.tmux_manager") as mock_tmux:
+            mock_tmux.list_windows = AsyncMock(return_value=windows)
+            changed = await mapper.sync_session_map()
+
+        assert changed is True
+        data = json.loads(map_file.read_text())
+        assert data["ccbot:@3"]["session_id"] == resume_sid
