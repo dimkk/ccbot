@@ -109,6 +109,19 @@ class Config:
         self.codex_compact_tool_events = (
             os.getenv("CCBOT_CODEX_COMPACT_TOOL_EVENTS", "true").lower() == "true"
         )
+        # Optional turbo mode: when per-user queue backlog grows, drop
+        # low-priority codex thinking messages to keep end-user delivery close
+        # to real-time.
+        self.codex_drop_thinking_on_backlog = (
+            os.getenv("CCBOT_CODEX_DROP_THINKING_ON_BACKLOG", "true").lower() == "true"
+        )
+        try:
+            self.codex_backlog_thinking_threshold = max(
+                1,
+                int(os.getenv("CCBOT_CODEX_BACKLOG_THINKING_THRESHOLD", "20")),
+            )
+        except ValueError:
+            self.codex_backlog_thinking_threshold = 20
 
         # All state files live under config_dir
         self.state_file = self.config_dir / "state.json"

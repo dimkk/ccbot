@@ -1586,12 +1586,13 @@ async def handle_new_message(msg: NewMessage, bot: Bot) -> None:
                 pass
 
     for user_id, wid, thread_id in active_users:
+        queue = get_message_queue(user_id)
+
         # Handle interactive tools specially - capture terminal and send UI
         if msg.tool_name in INTERACTIVE_TOOL_NAMES and msg.content_type == "tool_use":
             # Mark interactive mode BEFORE sleeping so polling skips this window
             set_interactive_mode(user_id, wid, thread_id)
             # Flush pending messages (e.g. plan content) before sending interactive UI
-            queue = get_message_queue(user_id)
             if queue:
                 await queue.join()
             # Wait briefly for the agent UI to render
@@ -1603,6 +1604,23 @@ async def handle_new_message(msg: NewMessage, bot: Bot) -> None:
             else:
                 # UI not rendered — clear the early-set mode
                 clear_interactive_mode(user_id, thread_id)
+
+        if (
+            msg.is_complete
+            and config.provider == "codex"
+            and config.codex_drop_thinking_on_backlog
+            and msg.content_type == "thinking"
+            and queue is not None
+            and queue.qsize() >= config.codex_backlog_thinking_threshold
+        ):
+            logger.info(
+                "Dropping codex thinking due backlog: user=%d queue=%d threshold=%d",
+                user_id,
+                queue.qsize(),
+                config.codex_backlog_thinking_threshold,
+            )
+            await _mark_window_read_offset(user_id, wid)
+            continue
 
         # In codex compact mode, skip standalone non-interactive tool_use
         # entries and let the following tool_result deliver consolidated output.

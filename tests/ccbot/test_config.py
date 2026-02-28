@@ -57,6 +57,8 @@ class TestConfigValid:
         assert cfg.supports_usage_command is False
         assert cfg.forward_slash_commands is True
         assert cfg.codex_compact_tool_events is True
+        assert cfg.codex_drop_thinking_on_backlog is True
+        assert cfg.codex_backlog_thinking_threshold == 20
         assert cfg.provider_data_root == cfg.codex_sessions_path
 
     def test_codex_resume_session_id_from_agent_command(self, monkeypatch):
@@ -67,6 +69,14 @@ class TestConfigValid:
         )
         cfg = Config()
         assert cfg.codex_resume_session_id == "019c9eef-c5f7-7dc2-9e92-de59a1c3cd28"
+
+    def test_codex_backlog_settings(self, monkeypatch):
+        monkeypatch.setenv("CCBOT_PROVIDER", "codex")
+        monkeypatch.setenv("CCBOT_CODEX_DROP_THINKING_ON_BACKLOG", "false")
+        monkeypatch.setenv("CCBOT_CODEX_BACKLOG_THINKING_THRESHOLD", "7")
+        cfg = Config()
+        assert cfg.codex_drop_thinking_on_backlog is False
+        assert cfg.codex_backlog_thinking_threshold == 7
 
 
 @pytest.mark.usefixtures("_base_env")

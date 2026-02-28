@@ -98,6 +98,8 @@ ALLOWED_USERS=your_telegram_user_id
 | `CLAUDE_COMMAND`        | `claude`   | Backward-compatible alias for `CCBOT_AGENT_COMMAND` |
 | `CCBOT_CODEX_SESSIONS_PATH` | `~/.codex/sessions` | Codex rollout root path |
 | `CCBOT_CODEX_COMPACT_TOOL_EVENTS` | `true` | In codex mode, skip standalone tool_use sends and post consolidated tool_result |
+| `CCBOT_CODEX_DROP_THINKING_ON_BACKLOG` | `true` | In codex mode, drop `thinking` when send queue is backlogged |
+| `CCBOT_CODEX_BACKLOG_THINKING_THRESHOLD` | `20` | Backlog size threshold for dropping codex `thinking` |
 | `CCBOT_FORWARD_SLASH`   | `true` | Forward unknown `/command` to CLI |
 | `MONITOR_POLL_INTERVAL` | `2.0`      | Polling interval in seconds                      |
 | `CCBOT_SHOW_HIDDEN_DIRS` | `false` | Show hidden (dot) directories in directory browser |
