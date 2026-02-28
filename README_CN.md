@@ -89,6 +89,10 @@ ALLOWED_USERS=your_telegram_user_id
 | `TMUX_SESSION_NAME` | `ccbot` | tmux 会话名称 |
 | `CLAUDE_COMMAND` | `claude` | 新窗口中运行的命令 |
 | `MONITOR_POLL_INTERVAL` | `2.0` | 轮询间隔（秒） |
+| `CCBOT_SHOW_HIDDEN_DIRS` | `false` | 在目录浏览器中显示隐藏（点开头）目录 |
+
+消息格式化目前固定为 HTML，使用 `chatgpt-md-converter`（`chatgpt_md_converter` 包）。
+不再提供运行时切换到 MarkdownV2 的开关。
 
 > 如果在 VPS 上运行且没有交互终端来批准权限，可以考虑：
 > ```
@@ -199,6 +203,10 @@ uv run ccbot
 
 通知发送到绑定了该会话窗口的话题中。
 
+格式说明：
+- Telegram 消息使用 `HTML` parse mode
+- 通过 `chatgpt-md-converter` 做 Markdown→HTML 转换与 HTML 标签感知拆分，保证长代码块拆分稳定
+
 ## 在 tmux 中运行 Claude Code
 
 ### 方式一：通过 Telegram 创建（推荐）
@@ -234,7 +242,7 @@ claude
 - **窗口 ID 为中心** — 所有内部状态以 tmux 窗口 ID（如 `@0`、`@12`）为键，而非窗口名称。窗口名称仅作为显示名称保留。同一目录可有多个窗口
 - **基于 Hook 的会话追踪** — Claude Code 的 `SessionStart` Hook 写入 `session_map.json`；监控器每次轮询读取它以自动检测会话变化
 - **工具调用配对** — `tool_use_id` 跨轮询周期追踪；工具结果直接编辑原始的工具调用 Telegram 消息
-- **MarkdownV2 + 降级** — 所有消息通过 `telegramify-markdown` 转换，解析失败时降级为纯文本
+- **HTML + 降级** — 所有消息通过 `chatgpt-md-converter` 转换为 Telegram HTML，解析失败时降级为纯文本
 - **解析层不截断** — 完整保留内容；发送层按 Telegram 4096 字符限制拆分
 
 ## 数据存储
@@ -260,8 +268,7 @@ src/ccbot/
 ├── monitor_state.py       # 监控状态持久化（字节偏移量）
 ├── transcript_parser.py   # Claude Code JSONL 对话记录解析
 ├── terminal_parser.py     # 终端面板解析（交互式 UI + 状态行）
-├── markdown_v2.py         # Markdown → Telegram MarkdownV2 转换
-├── telegram_sender.py     # 消息拆分 + 同步 HTTP 发送
+├── html_converter.py      # Markdown → Telegram HTML 转换 + HTML 感知拆分
 ├── screenshot.py          # 终端文字 → PNG 图片（支持 ANSI 颜色）
 ├── utils.py               # 通用工具（原子 JSON 写入、JSONL 辅助函数）
 ├── tmux_manager.py        # tmux 窗口管理（列出、创建、发送按键、终止）

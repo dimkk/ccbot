@@ -408,6 +408,15 @@ class SessionManager:
         """Get display name for a window_id, fallback to window_id itself."""
         return self.window_display_names.get(window_id, window_id)
 
+    def update_display_name(self, window_id: str, new_name: str) -> None:
+        """Update the display name for a window and persist state."""
+        self.window_display_names[window_id] = new_name
+        # Also update WindowState.window_name if it exists
+        if window_id in self.window_states:
+            self.window_states[window_id].window_name = new_name
+        self._save_state()
+        logger.info("Updated display name: window_id %s -> '%s'", window_id, new_name)
+
     # --- Group chat ID management (supergroup forum topic routing) ---
 
     def set_group_chat_id(

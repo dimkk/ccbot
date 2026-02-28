@@ -203,8 +203,12 @@ async def handle_interactive_ui(
             _interactive_mode[ikey] = window_id
             return True
         except Exception:
-            # Message unchanged or other error - silently ignore, don't send new
-            return True
+            # Edit failed (message deleted, etc.) - clear stale msg_id and send new
+            logger.debug(
+                "Edit failed for interactive msg %s, sending new", existing_msg_id
+            )
+            _interactive_msgs.pop(ikey, None)
+            # Fall through to send new message
 
     # Send new message (plain text — terminal content is not markdown)
     logger.info(

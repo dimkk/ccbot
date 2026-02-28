@@ -79,3 +79,38 @@ class TestSplitMessage:
         chunks = split_message(text, max_length=200)
         for chunk in chunks:
             assert len(chunk) <= 200
+
+    def test_code_block_split_closes_and_reopens(self):
+        """When splitting inside a code block, close with ``` and reopen."""
+        code = "```python\n" + "\n".join(f"line{i}" for i in range(20)) + "\n```"
+        chunks = split_message(code, max_length=60)
+        assert len(chunks) > 1
+        # First chunk should end with ``` (closing the block)
+        assert chunks[0].endswith("```")
+        # Second chunk should start with ```python (reopening)
+        assert chunks[1].startswith("```python")
+        # Last chunk should end with ``` (the original close)
+        assert chunks[-1].rstrip().endswith("```")
+
+    def test_code_block_not_split_fits(self):
+        """Code block that fits in one chunk should not be modified."""
+        code = "```python\nprint('hi')\n```"
+        chunks = split_message(code, max_length=100)
+        assert chunks == [code]
+
+    def test_text_before_and_after_code_block(self):
+        """Text around a code block that gets split."""
+        text = "before\n```js\nvar x = 1;\nvar y = 2;\n```\nafter"
+        chunks = split_message(text, max_length=30)
+        # Every chunk should have balanced ``` pairs or none
+        for chunk in chunks:
+            fence_count = chunk.count("```")
+            assert fence_count % 2 == 0, f"Unbalanced fences in: {chunk!r}"
+
+    def test_multiple_code_blocks(self):
+        """Multiple code blocks should each be handled independently."""
+        text = "text\n```py\na=1\n```\nmid\n```sh\nls\n```\nend"
+        chunks = split_message(text, max_length=30)
+        for chunk in chunks:
+            fence_count = chunk.count("```")
+            assert fence_count % 2 == 0, f"Unbalanced fences in: {chunk!r}"

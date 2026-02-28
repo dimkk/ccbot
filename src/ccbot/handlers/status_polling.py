@@ -49,16 +49,24 @@ async def update_status_message(
     user_id: int,
     window_id: str,
     thread_id: int | None = None,
+    skip_status: bool = False,
 ) -> None:
-    """Poll terminal and enqueue status update for user's active window.
+    """Poll terminal and check for interactive UIs and status updates.
+
+    UI detection always happens regardless of skip_status. When skip_status=True,
+    only UI detection runs (used when message queue is non-empty to avoid
+    flooding the queue with status updates).
 
     Also detects permission prompt UIs (not triggered via JSONL) and enters
     interactive mode when found.
     """
     w = await tmux_manager.find_window_by_id(window_id)
     if not w:
-        # Window gone, enqueue clear
-        await enqueue_status_update(bot, user_id, window_id, None, thread_id=thread_id)
+        # Window gone, enqueue clear (unless skipping status)
+        if not skip_status:
+            await enqueue_status_update(
+                bot, user_id, window_id, None, thread_id=thread_id
+            )
         return
 
     pane_text = await tmux_manager.capture_pane(w.window_id)
@@ -87,10 +95,19 @@ async def update_status_message(
 
     # Check for permission prompt (interactive UI not triggered via JSONL)
     if supports_interactive_ui and should_check_new_ui and is_interactive_ui(pane_text):
+        logger.debug(
+            "Interactive UI detected in polling (user=%d, window=%s, thread=%s)",
+            user_id,
+            window_id,
+            thread_id,
+        )
         await handle_interactive_ui(bot, user_id, window_id, thread_id)
         return
 
-    # Normal status line check
+    # Normal status line check — skip if queue is non-empty
+    if skip_status:
+        return
+
     status_line = parse_status_line(pane_text)
 
     if status_line:
@@ -168,14 +185,18 @@ async def status_poll_loop(bot: Bot) -> None:
                         )
                         continue
 
+                    # UI detection happens unconditionally in update_status_message.
+                    # Status enqueue is skipped inside update_status_message when
+                    # interactive UI is detected (returns early) or when queue is non-empty.
                     queue = get_message_queue(user_id)
-                    if queue and not queue.empty():
-                        continue
+                    skip_status = queue is not None and not queue.empty()
+
                     await update_status_message(
                         bot,
                         user_id,
                         wid,
                         thread_id=thread_id or None,
+                        skip_status=skip_status,
                     )
                 except Exception as e:
                     logger.debug(

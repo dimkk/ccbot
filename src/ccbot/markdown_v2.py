@@ -17,6 +17,90 @@ from telegramify_markdown.render import TelegramMarkdownRenderer
 
 from .transcript_parser import TranscriptParser
 
+_TABLE_SEP_RE = re.compile(r"^[\s|:\-]+$")
+
+
+def _split_table_row(line: str) -> list[str]:
+    """Split a table row by pipes, respecting escaped pipes (\\|)."""
+    content = line.strip().strip("|")
+    cells = re.split(r"(?<!\\)\|", content)
+    return [cell.strip().replace("\\|", "|") for cell in cells]
+
+
+def _convert_markdown_tables(text: str) -> str:
+    """Convert markdown tables to card-style key-value format.
+
+    Telegram has no table rendering. This converts each row into a card
+    with **Header**: value pairs, separated by horizontal lines — similar
+    to how Claude Code renders tables in narrow terminals.
+
+    Skips tables inside code blocks.
+    """
+    lines = text.split("\n")
+    result: list[str] = []
+    i = 0
+    in_code_block = False
+
+    while i < len(lines):
+        line = lines[i]
+        stripped = line.strip()
+
+        # Track code blocks
+        if stripped.startswith("```"):
+            in_code_block = not in_code_block
+            result.append(line)
+            i += 1
+            continue
+
+        if in_code_block:
+            result.append(line)
+            i += 1
+            continue
+
+        # Check if this looks like a table header row
+        if (
+            stripped.startswith("|")
+            and stripped.endswith("|")
+            and "|" in stripped[1:-1]
+        ):
+            headers = _split_table_row(stripped)
+
+            # Next line must be separator (---|---|---)
+            if i + 1 < len(lines):
+                sep_line = lines[i + 1].strip()
+                if sep_line.startswith("|") and _TABLE_SEP_RE.match(sep_line):
+                    i += 2  # Skip header + separator
+                    rows: list[list[str]] = []
+                    while i < len(lines):
+                        data_line = lines[i].strip()
+                        if data_line.startswith("|") and data_line.endswith("|"):
+                            rows.append(_split_table_row(data_line))
+                            i += 1
+                        else:
+                            break
+
+                    # Build card-style output
+                    separator = "────────────"
+                    cards: list[str] = []
+                    for row in rows:
+                        card_lines: list[str] = []
+                        for j, header in enumerate(headers):
+                            value = row[j] if j < len(row) else ""
+                            if value:
+                                card_lines.append(f"**{header}**: {value}")
+                            else:
+                                card_lines.append(f"**{header}**: —")
+                        cards.append("\n".join(card_lines))
+
+                    result.append(f"\n{separator}\n".join(cards))
+                    continue
+
+        result.append(line)
+        i += 1
+
+    return "\n".join(result)
+
+
 _EXPQUOTE_RE = re.compile(
     re.escape(TranscriptParser.EXPANDABLE_QUOTE_START)
     + r"([\s\S]*?)"
@@ -95,6 +179,9 @@ def convert_markdown(text: str) -> str:
     TranscriptParser) are extracted, escaped, and formatted separately
     so that telegramify_markdown doesn't mangle the >...|| syntax.
     """
+    # Convert markdown tables to card-style format before telegramify
+    text = _convert_markdown_tables(text)
+
     # Extract expandable quote blocks before telegramify
     segments: list[tuple[bool, str]] = []  # (is_quote, content)
     last_end = 0

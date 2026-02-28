@@ -1,6 +1,7 @@
 # CCBot
 
 [中文文档](README_CN.md)
+[Русская документация](README_RU.md)
 
 Control AI coding sessions remotely via Telegram — monitor, interact, and manage agent sessions running in tmux.
 
@@ -99,6 +100,9 @@ ALLOWED_USERS=your_telegram_user_id
 | `CCBOT_FORWARD_SLASH`   | `true` | Forward unknown `/command` to CLI |
 | `MONITOR_POLL_INTERVAL` | `2.0`      | Polling interval in seconds                      |
 | `CCBOT_SHOW_HIDDEN_DIRS` | `false` | Show hidden (dot) directories in directory browser |
+
+Message formatting is always HTML via `chatgpt-md-converter` (`chatgpt_md_converter` package).
+There is no runtime formatter switch to MarkdownV2.
 
 > If running on a VPS where there's no interactive terminal to approve permissions, consider:
 >
@@ -262,8 +266,7 @@ src/ccbot/
 ├── monitor_state.py       # Monitor state persistence (byte offsets)
 ├── transcript_parser.py   # Claude Code JSONL transcript parsing
 ├── terminal_parser.py     # Terminal pane parsing (interactive UI + status line)
-├── markdown_v2.py         # Markdown → Telegram MarkdownV2 conversion
-├── telegram_sender.py     # Message splitting + synchronous HTTP send
+├── html_converter.py      # Markdown → Telegram HTML conversion + HTML-aware splitting
 ├── screenshot.py          # Terminal text → PNG image with ANSI color support
 ├── utils.py               # Shared utilities (atomic JSON writes, JSONL helpers)
 ├── tmux_manager.py        # Tmux window management (list, create, send keys, kill)
