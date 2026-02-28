@@ -125,7 +125,9 @@ class Config:
 
         # Codex rollout logs root
         self.codex_sessions_path = Path(
-            os.getenv("CCBOT_CODEX_SESSIONS_PATH", str(Path.home() / ".codex" / "sessions"))
+            os.getenv(
+                "CCBOT_CODEX_SESSIONS_PATH", str(Path.home() / ".codex" / "sessions")
+            )
         )
         self.provider_data_root = (
             self.codex_sessions_path

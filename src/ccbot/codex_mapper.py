@@ -188,7 +188,13 @@ class CodexSessionMapper:
             # Map windows that appear active, or were mapped as codex before.
             # Codex often appears as "node" in tmux pane_current_command.
             pane_cmd = (w.pane_current_command or "").lower()
-            if existing_provider != "codex" and pane_cmd in ("", "bash", "sh", "zsh", "fish"):
+            if existing_provider != "codex" and pane_cmd in (
+                "",
+                "bash",
+                "sh",
+                "zsh",
+                "fish",
+            ):
                 continue
 
             norm_cwd = _norm_path(w.cwd)

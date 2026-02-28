@@ -652,7 +652,9 @@ class TranscriptParser:
                         pending_tools[call_id] = PendingToolInfo(
                             summary=summary,
                             tool_name=name,
-                            input_data=args_data if name in ("Edit", "NotebookEdit") else None,
+                            input_data=args_data
+                            if name in ("Edit", "NotebookEdit")
+                            else None,
                         )
                     _append_entry(
                         ParsedEntry(

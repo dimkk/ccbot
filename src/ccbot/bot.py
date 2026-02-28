@@ -655,7 +655,7 @@ async def photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             await safe_reply(update.message, f"❌ {err or 'Failed to create session'}")
             return
     else:
-        wid = session_manager.get_window_for_thread(user.id, thread_id)
+        wid = session_manager.resolve_window_for_thread(user.id, thread_id)
         if wid is None:
             await safe_reply(
                 update.message,
@@ -864,7 +864,7 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             await safe_reply(update.message, f"❌ {err or 'Failed to create session'}")
             return
     else:
-        wid = session_manager.get_window_for_thread(user.id, thread_id)
+        wid = session_manager.resolve_window_for_thread(user.id, thread_id)
     if wid is None:
         # Unbound topic — check for unbound windows first
         all_windows = await tmux_manager.list_windows()
