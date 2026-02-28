@@ -84,3 +84,36 @@ class TestCodexParseEntries:
         assert len(result) == 1
         assert result[0].role == "user"
         assert result[0].text == "привет"
+
+    def test_parses_codex_user_shell_command_as_local_command(self):
+        text = (
+            "<user_shell_command>\n"
+            "<command>\n"
+            "pwd\n"
+            "</command>\n"
+            "<result>\n"
+            "Exit code: 0\n"
+            "Duration: 0.01s\n"
+            "Output:\n"
+            "/home/dimkk/new-proj/opticlaw\n"
+            "\n"
+            "</result>\n"
+            "</user_shell_command>"
+        )
+        entries = [
+            {
+                "type": "response_item",
+                "timestamp": "2026-02-28T09:42:26.596Z",
+                "payload": {
+                    "type": "message",
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": text}],
+                },
+            }
+        ]
+        result, _ = TranscriptParser.parse_entries(entries)
+        assert len(result) == 1
+        assert result[0].role == "assistant"
+        assert result[0].content_type == "local_command"
+        assert "❯ `pwd`" in result[0].text
+        assert "/home/dimkk/new-proj/opticlaw" in result[0].text

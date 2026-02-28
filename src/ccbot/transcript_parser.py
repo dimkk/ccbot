@@ -190,6 +190,12 @@ class TranscriptParser:
     _RE_LOCAL_STDOUT = re.compile(
         r"<local-command-stdout>(.*?)</local-command-stdout>", re.DOTALL
     )
+    _RE_CODEX_USER_SHELL = re.compile(
+        r"<user_shell_command>\s*<command>\s*(.*?)\s*</command>\s*"
+        r"<result>\s*(.*?)\s*</result>\s*</user_shell_command>",
+        re.DOTALL,
+    )
+    _RE_CODEX_OUTPUT = re.compile(r"Output:\s*\n(.*)", re.DOTALL)
     _RE_SYSTEM_TAGS = re.compile(
         r"<(bash-input|bash-stdout|bash-stderr|local-command-caveat|system-reminder)"
     )
@@ -506,6 +512,30 @@ class TranscriptParser:
         return cls._format_expandable_quote(text)
 
     @classmethod
+    def _parse_codex_user_shell_command(cls, text: str) -> str | None:
+        """Parse Codex `<user_shell_command>` payload into local-command text."""
+        match = cls._RE_CODEX_USER_SHELL.search(text)
+        if not match:
+            return None
+
+        cmd = match.group(1).strip()
+        result_block = match.group(2).strip()
+        output_match = cls._RE_CODEX_OUTPUT.search(result_block)
+        output = output_match.group(1).strip() if output_match else ""
+
+        if not output:
+            output = "(no output)"
+
+        if cmd:
+            if "\n" in output:
+                return f"❯ `{cmd}`\n```\n{output}\n```"
+            return f"❯ `{cmd}`\n`{output}`"
+
+        if "\n" in output:
+            return f"```\n{output}\n```"
+        return f"`{output}`"
+
+    @classmethod
     def _parse_codex_entries(
         cls,
         entries: list[dict],
@@ -533,8 +563,22 @@ class TranscriptParser:
                     role = payload.get("role", "")
                     if role not in ("assistant", "user"):
                         continue
-                    # Avoid duplicate user events; prefer event_msg.user_message.
                     if role == "user":
+                        # Codex shell command responses are encoded as user messages
+                        # inside a <user_shell_command> wrapper.
+                        user_text = cls._extract_codex_text_from_content(
+                            payload.get("content", [])
+                        ).strip()
+                        local_cmd_text = cls._parse_codex_user_shell_command(user_text)
+                        if local_cmd_text:
+                            result.append(
+                                ParsedEntry(
+                                    role="assistant",
+                                    text=local_cmd_text,
+                                    content_type="local_command",
+                                    timestamp=entry_timestamp,
+                                )
+                            )
                         continue
                     text = cls._extract_codex_text_from_content(
                         payload.get("content", [])
