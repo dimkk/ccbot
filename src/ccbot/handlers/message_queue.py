@@ -27,6 +27,7 @@ from telegram import Bot
 from telegram.constants import ChatAction
 from telegram.error import RetryAfter
 
+from ..config import config
 from ..markdown_v2 import convert_markdown
 from ..session import session_manager
 from ..terminal_parser import parse_status_line
@@ -247,6 +248,16 @@ async def _message_queue_worker(bot: Bot, user_id: int) -> None:
                     if isinstance(e.retry_after, int)
                     else int(e.retry_after.total_seconds())
                 )
+                # Status tasks are ephemeral and should never force long
+                # per-user flood pauses that delay real content delivery.
+                if task.task_type != "content":
+                    logger.warning(
+                        "RetryAfter=%ds for %s task (user %d), dropping task",
+                        retry_secs,
+                        task.task_type,
+                        user_id,
+                    )
+                    continue
                 if retry_secs > FLOOD_CONTROL_MAX_WAIT:
                     _flood_until[user_id] = time.monotonic() + retry_secs
                     logger.warning(
@@ -302,6 +313,13 @@ async def _process_content_task(bot: Bot, user_id: int, task: MessageTask) -> No
     wid = task.window_id or ""
     tid = task.thread_id or 0
     chat_id = session_manager.resolve_chat_id(user_id, task.thread_id)
+
+    if (
+        config.provider == "codex"
+        and config.codex_compact_tool_events
+        and task.content_type == "tool_use"
+    ):
+        return
 
     # 1. Handle tool_result editing (merged parts are edited together)
     if task.content_type == "tool_result" and task.tool_use_id:

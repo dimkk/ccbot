@@ -56,6 +56,7 @@ class TestConfigValid:
         assert cfg.codex_resume_session_id == ""
         assert cfg.supports_usage_command is False
         assert cfg.forward_slash_commands is True
+        assert cfg.codex_compact_tool_events is True
         assert cfg.provider_data_root == cfg.codex_sessions_path
 
     def test_codex_resume_session_id_from_agent_command(self, monkeypatch):

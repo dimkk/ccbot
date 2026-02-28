@@ -104,6 +104,11 @@ class Config:
         self.forward_slash_commands = (
             os.getenv("CCBOT_FORWARD_SLASH", slash_default).lower() == "true"
         )
+        # Codex can emit very chatty tool events; compact mode keeps delivery
+        # near real-time by sending consolidated tool_result messages.
+        self.codex_compact_tool_events = (
+            os.getenv("CCBOT_CODEX_COMPACT_TOOL_EVENTS", "true").lower() == "true"
+        )
 
         # All state files live under config_dir
         self.state_file = self.config_dir / "state.json"

@@ -1576,6 +1576,15 @@ async def handle_new_message(msg: NewMessage, bot: Bot) -> None:
         logger.info(f"No active users for session {msg.session_id}")
         return
 
+    async def _mark_window_read_offset(user_id: int, window_id: str) -> None:
+        session = await session_manager.resolve_session_for_window(window_id)
+        if session and session.file_path:
+            try:
+                file_size = Path(session.file_path).stat().st_size
+                session_manager.update_user_window_offset(user_id, window_id, file_size)
+            except OSError:
+                pass
+
     for user_id, wid, thread_id in active_users:
         # Handle interactive tools specially - capture terminal and send UI
         if msg.tool_name in INTERACTIVE_TOOL_NAMES and msg.content_type == "tool_use":
@@ -1589,20 +1598,23 @@ async def handle_new_message(msg: NewMessage, bot: Bot) -> None:
             await asyncio.sleep(0.3)
             handled = await handle_interactive_ui(bot, user_id, wid, thread_id)
             if handled:
-                # Update user's read offset
-                session = await session_manager.resolve_session_for_window(wid)
-                if session and session.file_path:
-                    try:
-                        file_size = Path(session.file_path).stat().st_size
-                        session_manager.update_user_window_offset(
-                            user_id, wid, file_size
-                        )
-                    except OSError:
-                        pass
+                await _mark_window_read_offset(user_id, wid)
                 continue  # Don't send the normal tool_use message
             else:
                 # UI not rendered — clear the early-set mode
                 clear_interactive_mode(user_id, thread_id)
+
+        # In codex compact mode, skip standalone non-interactive tool_use
+        # entries and let the following tool_result deliver consolidated output.
+        if (
+            msg.is_complete
+            and config.provider == "codex"
+            and config.codex_compact_tool_events
+            and msg.content_type == "tool_use"
+            and msg.tool_name not in INTERACTIVE_TOOL_NAMES
+        ):
+            await _mark_window_read_offset(user_id, wid)
+            continue
 
         # Any non-interactive message means the interaction is complete — delete the UI message
         if get_interactive_msg_id(user_id, thread_id):
@@ -1631,15 +1643,7 @@ async def handle_new_message(msg: NewMessage, bot: Bot) -> None:
                 image_data=msg.image_data,
             )
 
-            # Update user's read offset to current file position
-            # This marks these messages as "read" for this user
-            session = await session_manager.resolve_session_for_window(wid)
-            if session and session.file_path:
-                try:
-                    file_size = Path(session.file_path).stat().st_size
-                    session_manager.update_user_window_offset(user_id, wid, file_size)
-                except OSError:
-                    pass
+            await _mark_window_read_offset(user_id, wid)
 
 
 # --- App lifecycle ---
