@@ -17,7 +17,7 @@ _NGROK_URL_RE = re.compile(
 )
 _CF_URL_RE = re.compile(r"https://[A-Za-z0-9-]+\.trycloudflare\.com")
 _LOCALHOST_RUN_URL_RE = re.compile(
-    r"https://[A-Za-z0-9.-]+\.(?:localhost\.run|lhr\.life)"
+    r"https://(?!admin(?:\.|$))[A-Za-z0-9-]{8,}\.(?:localhost\.run|lhr\.life)"
 )
 
 
