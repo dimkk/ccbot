@@ -1,7 +1,7 @@
 """Port forwarding helpers for exposing local dev services.
 
 Starts public tunnels for local ports using available CLI tools
-(`ngrok` preferred, `cloudflared` fallback).
+(`ngrok` preferred, `cloudflared` fallback, `ssh`/localhost.run as last resort).
 """
 
 import asyncio
@@ -16,6 +16,9 @@ _NGROK_URL_RE = re.compile(
     r"https://[A-Za-z0-9.-]+\.(?:ngrok-free\.app|ngrok\.app|ngrok\.io)"
 )
 _CF_URL_RE = re.compile(r"https://[A-Za-z0-9-]+\.trycloudflare\.com")
+_LOCALHOST_RUN_URL_RE = re.compile(
+    r"https://[A-Za-z0-9.-]+\.(?:localhost\.run|lhr\.life)"
+)
 
 
 @dataclass
@@ -66,9 +69,11 @@ class PortForwardManager:
             providers.append("ngrok")
         if shutil.which("cloudflared"):
             providers.append("cloudflared")
+        if shutil.which("ssh"):
+            providers.append("localhost.run")
         if not providers:
             raise RuntimeError(
-                "No tunnel provider found. Install ngrok or cloudflared."
+                "No tunnel provider found. Install ngrok/cloudflared or ensure ssh is available."
             )
 
         errors: list[str] = []
@@ -76,7 +81,9 @@ class PortForwardManager:
             try:
                 if provider == "ngrok":
                     return await self._start_ngrok(port)
-                return await self._start_cloudflared(port)
+                if provider == "cloudflared":
+                    return await self._start_cloudflared(port)
+                return await self._start_localhost_run(port)
             except RuntimeError as e:
                 errors.append(f"{provider}: {e}")
                 logger.warning("Tunnel provider failed for port %d: %s", port, e)
@@ -130,6 +137,43 @@ class PortForwardManager:
         )
         return PortTunnel(
             port=port, public_url=url, provider="cloudflared", process=proc
+        )
+
+    async def _start_localhost_run(self, port: int) -> PortTunnel:
+        cmd = [
+            "ssh",
+            "-o",
+            "StrictHostKeyChecking=no",
+            "-o",
+            "UserKnownHostsFile=/dev/null",
+            "-o",
+            "ExitOnForwardFailure=yes",
+            "-o",
+            "ServerAliveInterval=30",
+            "-o",
+            "ServerAliveCountMax=3",
+            "-N",
+            "-R",
+            f"80:127.0.0.1:{port}",
+            "nokey@localhost.run",
+        ]
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+        )
+        url = await self._wait_for_url(
+            proc=proc,
+            provider="localhost.run",
+            port=port,
+            regex=_LOCALHOST_RUN_URL_RE,
+            timeout_seconds=45.0,
+        )
+        return PortTunnel(
+            port=port,
+            public_url=url,
+            provider="localhost.run",
+            process=proc,
         )
 
     async def _wait_for_url(
