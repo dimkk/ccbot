@@ -1569,9 +1569,19 @@ async def handle_new_message(msg: NewMessage, bot: Bot) -> None:
     Routes via thread_bindings to deliver to the correct topic.
     """
     status = "complete" if msg.is_complete else "streaming"
+    trace_id = msg.trace_id or f"{msg.session_id}:0-0"
+
+    def _trace_age_seconds() -> float:
+        if msg.detected_at_monotonic <= 0:
+            return 0.0
+        return max(0.0, time.monotonic() - msg.detected_at_monotonic)
+
     logger.info(
-        f"handle_new_message [{status}]: session={msg.session_id}, "
-        f"text_len={len(msg.text)}"
+        "handle_new_message [%s]: trace=%s session=%s text_len=%d",
+        status,
+        trace_id,
+        msg.session_id,
+        len(msg.text),
     )
 
     # Find users whose thread-bound window matches this session
@@ -1582,13 +1592,19 @@ async def handle_new_message(msg: NewMessage, bot: Bot) -> None:
         return
 
     async def _mark_window_read_offset(user_id: int, window_id: str) -> None:
-        session = await session_manager.resolve_session_for_window(window_id)
-        if session and session.file_path:
-            try:
-                file_size = Path(session.file_path).stat().st_size
-                session_manager.update_user_window_offset(user_id, window_id, file_size)
-            except OSError:
-                pass
+        state = session_manager.get_window_state(window_id)
+        file_path = state.file_path
+        if not file_path:
+            # Fallback for stale state
+            session = await session_manager.resolve_session_for_window(window_id)
+            if not session or not session.file_path:
+                return
+            file_path = session.file_path
+        try:
+            file_size = Path(file_path).stat().st_size
+            session_manager.update_user_window_offset(user_id, window_id, file_size)
+        except OSError:
+            pass
 
     for user_id, wid, thread_id in active_users:
         queue = get_message_queue(user_id)
@@ -1630,6 +1646,13 @@ async def handle_new_message(msg: NewMessage, bot: Bot) -> None:
             ):
                 keep_in_super = True
             if not keep_in_super:
+                logger.info(
+                    "LineTrace drop: trace=%s user=%d reason=super_turbo content_type=%s trace_age=%.3fs",
+                    trace_id,
+                    user_id,
+                    msg.content_type,
+                    _trace_age_seconds(),
+                )
                 await _mark_window_read_offset(user_id, wid)
                 continue
 
@@ -1658,6 +1681,12 @@ async def handle_new_message(msg: NewMessage, bot: Bot) -> None:
                 and msg.content_type == "tool_use"
                 and msg.tool_name not in INTERACTIVE_TOOL_NAMES
             ):
+                logger.info(
+                    "LineTrace drop: trace=%s user=%d reason=super_turbo_tool_use trace_age=%.3fs",
+                    trace_id,
+                    user_id,
+                    _trace_age_seconds(),
+                )
                 await _mark_window_read_offset(user_id, wid)
                 continue
 
@@ -1686,6 +1715,11 @@ async def handle_new_message(msg: NewMessage, bot: Bot) -> None:
                 text=msg.text,
                 thread_id=thread_id,
                 image_data=msg.image_data,
+                session_id=msg.session_id,
+                trace_id=trace_id,
+                source_line_start=msg.source_line_start,
+                source_line_end=msg.source_line_end,
+                detected_at_monotonic=msg.detected_at_monotonic,
             )
 
             await _mark_window_read_offset(user_id, wid)
@@ -1761,7 +1795,7 @@ async def post_shutdown(application: Application) -> None:
     await shutdown_workers()
 
     if session_monitor:
-        session_monitor.stop()
+        await session_monitor.stop()
         logger.info("Session monitor stopped")
 
 

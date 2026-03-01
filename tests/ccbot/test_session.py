@@ -169,6 +169,47 @@ class TestOffsets:
         assert save_calls == 2
 
 
+class TestFindUsersForSession:
+    @pytest.mark.asyncio
+    async def test_fast_path_uses_window_state_without_resolve(
+        self, mgr: SessionManager, monkeypatch
+    ) -> None:
+        mgr.bind_thread(100, 1, "@1")
+        mgr.get_window_state("@1").session_id = "sid-1"
+
+        resolve_calls = 0
+
+        async def fake_resolve(_window_id: str):
+            nonlocal resolve_calls
+            resolve_calls += 1
+            return None
+
+        monkeypatch.setattr(mgr, "resolve_session_for_window", fake_resolve)
+
+        result = await mgr.find_users_for_session("sid-1")
+
+        assert result == [(100, "@1", 1)]
+        assert resolve_calls == 0
+
+    @pytest.mark.asyncio
+    async def test_fallback_resolve_when_window_state_missing(
+        self, mgr: SessionManager, monkeypatch
+    ) -> None:
+        mgr.bind_thread(100, 1, "@1")
+
+        class _Resolved:
+            session_id = "sid-1"
+
+        async def fake_resolve(_window_id: str):
+            return _Resolved()
+
+        monkeypatch.setattr(mgr, "resolve_session_for_window", fake_resolve)
+
+        result = await mgr.find_users_for_session("sid-1")
+
+        assert result == [(100, "@1", 1)]
+
+
 class TestIsWindowId:
     def test_valid_ids(self, mgr: SessionManager) -> None:
         assert mgr._is_window_id("@0") is True

@@ -65,6 +65,11 @@ class MessageTask:
     content_type: str = "text"
     thread_id: int | None = None  # Telegram topic thread_id for targeted send
     image_data: list[tuple[str, bytes]] | None = None  # From tool_result images
+    session_id: str = ""
+    trace_id: str = ""
+    source_line_start: int = 0
+    source_line_end: int = 0
+    trace_detected_at: float = 0.0
     created_at: float = field(default_factory=time.monotonic)
 
 
@@ -86,6 +91,12 @@ _flood_until: dict[int, float] = {}
 # Max seconds to wait for flood control before dropping tasks
 FLOOD_CONTROL_MAX_WAIT = 10
 _LOW_PRIORITY_CONTENT_TYPES = frozenset({"thinking", "tool_use", "tool_result"})
+
+
+def _trace_age_seconds(now: float, detected_at: float) -> float:
+    if detected_at <= 0:
+        return 0.0
+    return max(0.0, now - detected_at)
 
 
 def get_message_queue(user_id: int) -> asyncio.Queue[MessageTask] | None:
@@ -133,6 +144,9 @@ async def drop_low_priority_tasks_for_catchup(user_id: int) -> int:
         return 0
 
     dropped = 0
+    dropped_traces: list[str] = []
+    max_trace_age = 0.0
+    max_queue_wait = 0.0
     async with lock:
         items = _inspect_queue(queue)
         kept: list[MessageTask] = []
@@ -140,12 +154,26 @@ async def drop_low_priority_tasks_for_catchup(user_id: int) -> int:
         for task in items:
             if task.task_type in ("status_update", "status_clear"):
                 dropped += 1
+                if task.trace_id:
+                    dropped_traces.append(task.trace_id)
+                now = time.monotonic()
+                max_trace_age = max(
+                    max_trace_age, _trace_age_seconds(now, task.trace_detected_at)
+                )
+                max_queue_wait = max(max_queue_wait, max(0.0, now - task.created_at))
                 continue
             if (
                 task.task_type == "content"
                 and task.content_type in _LOW_PRIORITY_CONTENT_TYPES
             ):
                 dropped += 1
+                if task.trace_id:
+                    dropped_traces.append(task.trace_id)
+                now = time.monotonic()
+                max_trace_age = max(
+                    max_trace_age, _trace_age_seconds(now, task.trace_detected_at)
+                )
+                max_queue_wait = max(max_queue_wait, max(0.0, now - task.created_at))
                 continue
             kept.append(task)
 
@@ -159,6 +187,16 @@ async def drop_low_priority_tasks_for_catchup(user_id: int) -> int:
         for _ in range(dropped):
             queue.task_done()
 
+    if dropped > 0:
+        sample = ",".join(dropped_traces[:5]) if dropped_traces else "-"
+        logger.info(
+            "LineTrace drop_batch: user=%d dropped=%d sample_traces=%s max_trace_age=%.3fs max_queue_wait=%.3fs",
+            user_id,
+            dropped,
+            sample,
+            max_trace_age,
+            max_queue_wait,
+        )
     return dropped
 
 
@@ -284,6 +322,11 @@ async def _merge_content_tasks(
             tool_use_id=first.tool_use_id,
             content_type=first.content_type,
             thread_id=first.thread_id,
+            session_id=first.session_id,
+            trace_id=first.trace_id,
+            source_line_start=first.source_line_start,
+            source_line_end=first.source_line_end,
+            trace_detected_at=first.trace_detected_at,
             created_at=first.created_at,
         ),
         merge_count,
@@ -338,11 +381,15 @@ async def _message_queue_worker(bot: Bot, user_id: int) -> None:
                         and config.codex_catchup_enabled
                         and task.content_type in _LOW_PRIORITY_CONTENT_TYPES
                     ):
+                        now = time.monotonic()
                         logger.warning(
-                            "Flood control active (%ds): dropping low-priority %s task for user %d",
-                            int(remaining),
-                            task.content_type,
+                            "LineTrace drop: trace=%s user=%d reason=flood_control_active content_type=%s retry_in=%ds trace_age=%.3fs queue_wait=%.3fs",
+                            task.trace_id or "-",
                             user_id,
+                            task.content_type,
+                            int(remaining),
+                            _trace_age_seconds(now, task.trace_detected_at),
+                            max(0.0, now - task.created_at),
                         )
                         drop_current_task = True
                         break
@@ -405,11 +452,15 @@ async def _message_queue_worker(bot: Bot, user_id: int) -> None:
                 ):
                     if retry_secs > FLOOD_CONTROL_MAX_WAIT:
                         _flood_until[user_id] = time.monotonic() + retry_secs
+                    now = time.monotonic()
                     logger.warning(
-                        "RetryAfter=%ds for low-priority content (%s, user %d), dropping task",
-                        retry_secs,
-                        task.content_type,
+                        "LineTrace drop: trace=%s user=%d reason=retry_after_low_priority content_type=%s retry_after=%ds trace_age=%.3fs queue_wait=%.3fs",
+                        task.trace_id or "-",
                         user_id,
+                        task.content_type,
+                        retry_secs,
+                        _trace_age_seconds(now, task.trace_detected_at),
+                        max(0.0, now - task.created_at),
                     )
                     continue
                 if retry_secs > FLOOD_CONTROL_MAX_WAIT:
@@ -467,6 +518,7 @@ async def _process_content_task(bot: Bot, user_id: int, task: MessageTask) -> No
     wid = task.window_id or ""
     tid = task.thread_id or 0
     chat_id = session_manager.resolve_chat_id(user_id, task.thread_id)
+    trace_id = task.trace_id or f"{task.session_id}:0-0"
 
     # 1. Handle tool_result editing (merged parts are edited together)
     if task.content_type == "tool_result" and task.tool_use_id:
@@ -487,6 +539,18 @@ async def _process_content_task(bot: Bot, user_id: int, task: MessageTask) -> No
                 )
                 await _send_task_images(bot, chat_id, task)
                 await _check_and_send_status(bot, user_id, wid, task.thread_id)
+                now = time.monotonic()
+                logger.info(
+                    "LineTrace out: trace=%s user=%d action=edit content_type=%s message_id=%d line=%d-%d trace_age=%.3fs queue_wait=%.3fs",
+                    trace_id,
+                    user_id,
+                    task.content_type,
+                    edit_msg_id,
+                    task.source_line_start,
+                    task.source_line_end,
+                    _trace_age_seconds(now, task.trace_detected_at),
+                    max(0.0, now - task.created_at),
+                )
                 return
             except RetryAfter:
                 raise
@@ -502,6 +566,18 @@ async def _process_content_task(bot: Bot, user_id: int, task: MessageTask) -> No
                     )
                     await _send_task_images(bot, chat_id, task)
                     await _check_and_send_status(bot, user_id, wid, task.thread_id)
+                    now = time.monotonic()
+                    logger.info(
+                        "LineTrace out: trace=%s user=%d action=edit_plain content_type=%s message_id=%d line=%d-%d trace_age=%.3fs queue_wait=%.3fs",
+                        trace_id,
+                        user_id,
+                        task.content_type,
+                        edit_msg_id,
+                        task.source_line_start,
+                        task.source_line_end,
+                        _trace_age_seconds(now, task.trace_detected_at),
+                        max(0.0, now - task.created_at),
+                    )
                     return
                 except RetryAfter:
                     raise
@@ -512,6 +588,7 @@ async def _process_content_task(bot: Bot, user_id: int, task: MessageTask) -> No
     # 2. Send content messages, converting status message to first content part
     first_part = True
     last_msg_id: int | None = None
+    sent_msg_ids: list[int] = []
     for part in task.parts:
         sent = None
 
@@ -527,6 +604,7 @@ async def _process_content_task(bot: Bot, user_id: int, task: MessageTask) -> No
             )
             if converted_msg_id is not None:
                 last_msg_id = converted_msg_id
+                sent_msg_ids.append(converted_msg_id)
                 continue
 
         sent = await send_with_fallback(
@@ -538,6 +616,7 @@ async def _process_content_task(bot: Bot, user_id: int, task: MessageTask) -> No
 
         if sent:
             last_msg_id = sent.message_id
+            sent_msg_ids.append(sent.message_id)
 
     # 3. Record tool_use message ID for later editing
     if last_msg_id and task.tool_use_id and task.content_type == "tool_use":
@@ -548,6 +627,35 @@ async def _process_content_task(bot: Bot, user_id: int, task: MessageTask) -> No
 
     # 5. After content, check and send status
     await _check_and_send_status(bot, user_id, wid, task.thread_id)
+
+    if sent_msg_ids:
+        ids = ",".join(str(i) for i in sent_msg_ids)
+        now = time.monotonic()
+        logger.info(
+            "LineTrace out: trace=%s user=%d action=send content_type=%s tg_message_ids=%s parts=%d line=%d-%d trace_age=%.3fs queue_wait=%.3fs",
+            trace_id,
+            user_id,
+            task.content_type,
+            ids,
+            len(task.parts),
+            task.source_line_start,
+            task.source_line_end,
+            _trace_age_seconds(now, task.trace_detected_at),
+            max(0.0, now - task.created_at),
+        )
+    else:
+        now = time.monotonic()
+        logger.warning(
+            "LineTrace out: trace=%s user=%d action=send_none content_type=%s parts=%d line=%d-%d trace_age=%.3fs queue_wait=%.3fs",
+            trace_id,
+            user_id,
+            task.content_type,
+            len(task.parts),
+            task.source_line_start,
+            task.source_line_end,
+            _trace_age_seconds(now, task.trace_detected_at),
+            max(0.0, now - task.created_at),
+        )
 
 
 async def _convert_status_to_content(
@@ -766,15 +874,15 @@ async def enqueue_content_message(
     text: str | None = None,
     thread_id: int | None = None,
     image_data: list[tuple[str, bytes]] | None = None,
+    session_id: str = "",
+    trace_id: str = "",
+    source_line_start: int = 0,
+    source_line_end: int = 0,
+    detected_at_monotonic: float = 0.0,
 ) -> None:
     """Enqueue a content message task."""
-    logger.debug(
-        "Enqueue content: user=%d, window_id=%s, content_type=%s",
-        user_id,
-        window_id,
-        content_type,
-    )
     queue = get_or_create_queue(bot, user_id)
+    queue_before = queue.qsize()
 
     task = MessageTask(
         task_type="content",
@@ -785,8 +893,23 @@ async def enqueue_content_message(
         content_type=content_type,
         thread_id=thread_id,
         image_data=image_data,
+        session_id=session_id,
+        trace_id=trace_id,
+        source_line_start=source_line_start,
+        source_line_end=source_line_end,
+        trace_detected_at=detected_at_monotonic,
     )
     queue.put_nowait(task)
+    now = time.monotonic()
+    logger.info(
+        "LineTrace enqueue: trace=%s user=%d content_type=%s queue=%d->%d trace_age=%.3fs",
+        trace_id or "-",
+        user_id,
+        content_type,
+        queue_before,
+        queue.qsize(),
+        _trace_age_seconds(now, detected_at_monotonic),
+    )
 
 
 async def enqueue_status_update(

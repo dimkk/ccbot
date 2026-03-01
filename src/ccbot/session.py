@@ -796,6 +796,13 @@ class SessionManager:
         """
         result: list[tuple[int, str, int | None]] = []
         for user_id, thread_id, window_id in self.iter_thread_bindings():
+            state = self.window_states.get(window_id)
+            # Fast path: session_id is already synced from session_map.json.
+            if state and state.session_id == session_id:
+                result.append((user_id, window_id, thread_id or None))
+                continue
+
+            # Fallback path for stale/incomplete state.
             resolved = await self.resolve_session_for_window(window_id)
             if resolved and resolved.session_id == session_id:
                 result.append((user_id, window_id, thread_id or None))

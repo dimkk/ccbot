@@ -14,6 +14,7 @@ Key classes: SessionMonitor, NewMessage, SessionInfo.
 import asyncio
 import json
 import logging
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Awaitable
@@ -50,6 +51,10 @@ class NewMessage:
     role: str = "assistant"  # "user" or "assistant"
     tool_name: str | None = None  # For tool_use messages, the tool name
     image_data: list[tuple[str, bytes]] | None = None  # From tool_result images
+    source_line_start: int = 0  # JSONL byte offset start in transcript
+    source_line_end: int = 0  # JSONL byte offset end in transcript
+    trace_id: str = ""  # Stable line trace id: <session_id>:<start>-<end>
+    detected_at_monotonic: float = 0.0  # Local monotonic time when line was parsed
 
 
 class SessionMonitor:
@@ -270,11 +275,18 @@ class SessionMonitor:
                 # successfully. A non-empty line that fails JSON parsing is
                 # likely a partial write; stop and retry next cycle.
                 safe_offset = session.last_byte_offset
-                async for line in f:
+                while True:
+                    line_start = await f.tell()
+                    line = await f.readline()
+                    if not line:
+                        break
+                    line_end = await f.tell()
                     data = TranscriptParser.parse_line(line)
                     if data:
+                        data["__ccbot_line_start"] = line_start
+                        data["__ccbot_line_end"] = line_end
                         new_entries.append(data)
-                        safe_offset = await f.tell()
+                        safe_offset = line_end
                     elif line.strip():
                         # Partial JSONL line — don't advance offset past it
                         logger.warning(
@@ -284,7 +296,7 @@ class SessionMonitor:
                         break
                     else:
                         # Empty line — safe to skip
-                        safe_offset = await f.tell()
+                        safe_offset = line_end
 
                 session.last_byte_offset = safe_offset
 
@@ -360,35 +372,52 @@ class SessionMonitor:
                         f"session {session_info.session_id}"
                     )
 
-                # Parse new entries using the shared logic, carrying over pending tools
+                # Parse line-by-line to preserve exact source line trace.
                 carry = self._pending_tools.get(session_info.session_id, {})
-                parsed_entries, remaining = TranscriptParser.parse_entries(
-                    new_entries,
-                    pending_tools=carry,
-                )
-                if remaining:
-                    self._pending_tools[session_info.session_id] = remaining
+                for raw in new_entries:
+                    line_start = int(raw.get("__ccbot_line_start", 0))
+                    line_end = int(raw.get("__ccbot_line_end", 0))
+                    trace_id = f"{session_info.session_id}:{line_start}-{line_end}"
+
+                    parsed_entries, carry = TranscriptParser.parse_entries(
+                        [raw],
+                        pending_tools=carry,
+                    )
+
+                    for entry in parsed_entries:
+                        if not entry.text and not entry.image_data:
+                            continue
+                        # Skip user messages unless show_user_messages is enabled
+                        if entry.role == "user" and not config.show_user_messages:
+                            continue
+                        logger.info(
+                            "LineTrace in: trace=%s type=%s role=%s text_len=%d",
+                            trace_id,
+                            entry.content_type,
+                            entry.role,
+                            len(entry.text),
+                        )
+                        new_messages.append(
+                            NewMessage(
+                                session_id=session_info.session_id,
+                                text=entry.text,
+                                is_complete=True,
+                                content_type=entry.content_type,
+                                tool_use_id=entry.tool_use_id,
+                                role=entry.role,
+                                tool_name=entry.tool_name,
+                                image_data=entry.image_data,
+                                source_line_start=line_start,
+                                source_line_end=line_end,
+                                trace_id=trace_id,
+                                detected_at_monotonic=time.monotonic(),
+                            )
+                        )
+
+                if carry:
+                    self._pending_tools[session_info.session_id] = carry
                 else:
                     self._pending_tools.pop(session_info.session_id, None)
-
-                for entry in parsed_entries:
-                    if not entry.text and not entry.image_data:
-                        continue
-                    # Skip user messages unless show_user_messages is enabled
-                    if entry.role == "user" and not config.show_user_messages:
-                        continue
-                    new_messages.append(
-                        NewMessage(
-                            session_id=session_info.session_id,
-                            text=entry.text,
-                            is_complete=True,
-                            content_type=entry.content_type,
-                            tool_use_id=entry.tool_use_id,
-                            role=entry.role,
-                            tool_name=entry.tool_name,
-                            image_data=entry.image_data,
-                        )
-                    )
 
                 self.state.update_session(tracked)
 
@@ -568,10 +597,14 @@ class SessionMonitor:
         self._running = True
         self._task = asyncio.create_task(self._monitor_loop())
 
-    def stop(self) -> None:
+    async def stop(self) -> None:
         self._running = False
         if self._task:
             self._task.cancel()
+            try:
+                await self._task
+            except asyncio.CancelledError:
+                pass
             self._task = None
         self.state.save()
         logger.info("Session monitor stopped and state saved")
