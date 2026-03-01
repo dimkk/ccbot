@@ -1,11 +1,18 @@
 """Unit tests for SessionMonitor JSONL reading and offset handling."""
 
 import json
+from unittest.mock import AsyncMock
 
 import pytest
 
 from ccbot.monitor_state import TrackedSession
-from ccbot.session_monitor import SessionMonitor
+from ccbot.session_monitor import (
+    _MAX_EMITTED_TEXT_CHARS,
+    _MAX_INITIAL_BACKLOG_BYTES,
+    SessionInfo,
+    SessionMonitor,
+)
+from ccbot.transcript_parser import ParsedEntry
 
 
 class TestReadNewLinesOffsetRecovery:
@@ -93,3 +100,83 @@ class TestReadNewLinesOffsetRecovery:
         # Should reset offset to 0 and read the line
         assert session.last_byte_offset == jsonl_file.stat().st_size
         assert len(result) == 1
+
+
+class TestSessionMonitorOversizedProtection:
+    @pytest.fixture
+    def monitor(self, tmp_path):
+        return SessionMonitor(
+            projects_path=tmp_path / "projects",
+            state_file=tmp_path / "monitor_state.json",
+        )
+
+    @pytest.mark.asyncio
+    async def test_check_for_updates_truncates_oversized_entry_text(
+        self, monitor, tmp_path, monkeypatch
+    ):
+        session_id = "s1"
+        jsonl_file = tmp_path / "session.jsonl"
+        jsonl_file.write_text("{}\n", encoding="utf-8")
+
+        tracked = TrackedSession(
+            session_id=session_id,
+            file_path=str(jsonl_file),
+            last_byte_offset=0,
+        )
+        monitor.state.update_session(tracked)
+        monitor._file_mtimes[session_id] = -1.0
+
+        async def fake_scan_projects():
+            return [SessionInfo(session_id=session_id, file_path=jsonl_file)]
+
+        async def fake_read_new_lines(_tracked, _file):
+            return [{"__ccbot_line_start": 10, "__ccbot_line_end": 20}]
+
+        huge_text = "X" * (_MAX_EMITTED_TEXT_CHARS + 777)
+
+        def fake_parse_entries(_entries, pending_tools=None):
+            return (
+                [ParsedEntry(role="assistant", text=huge_text, content_type="text")],
+                pending_tools or {},
+            )
+
+        monkeypatch.setattr(monitor, "scan_projects", fake_scan_projects)
+        monkeypatch.setattr(monitor, "_read_new_lines", fake_read_new_lines)
+        monkeypatch.setattr(
+            "ccbot.session_monitor.TranscriptParser.parse_entries",
+            fake_parse_entries,
+        )
+
+        messages = await monitor.check_for_updates({session_id})
+        assert len(messages) == 1
+        assert len(messages[0].text) < len(huge_text)
+        assert "truncated by CCBot" in messages[0].text
+
+    @pytest.mark.asyncio
+    async def test_check_for_updates_fast_forwards_large_startup_backlog(
+        self, monitor, tmp_path, monkeypatch
+    ):
+        session_id = "s2"
+        jsonl_file = tmp_path / "session.jsonl"
+        payload = "A" * (_MAX_INITIAL_BACKLOG_BYTES + 100)
+        jsonl_file.write_text(payload, encoding="utf-8")
+
+        tracked = TrackedSession(
+            session_id=session_id,
+            file_path=str(jsonl_file),
+            last_byte_offset=0,
+        )
+        monitor.state.update_session(tracked)
+        monitor._file_mtimes[session_id] = -1.0
+
+        async def fake_scan_projects():
+            return [SessionInfo(session_id=session_id, file_path=jsonl_file)]
+
+        mock_read_new_lines = AsyncMock(return_value=[])
+        monkeypatch.setattr(monitor, "scan_projects", fake_scan_projects)
+        monkeypatch.setattr(monitor, "_read_new_lines", mock_read_new_lines)
+
+        messages = await monitor.check_for_updates({session_id})
+        assert messages == []
+        assert tracked.last_byte_offset == jsonl_file.stat().st_size
+        mock_read_new_lines.assert_not_called()

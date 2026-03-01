@@ -30,6 +30,12 @@ from .utils import read_cwd_from_jsonl
 
 logger = logging.getLogger(__name__)
 
+# Safety limits for oversized transcript payloads.
+# These values intentionally avoid additional env knobs.
+_MAX_JSONL_LINE_CHARS = 256_000
+_MAX_EMITTED_TEXT_CHARS = 32_000
+_MAX_INITIAL_BACKLOG_BYTES = 1_000_000
+
 
 @dataclass
 class SessionInfo:
@@ -90,6 +96,18 @@ class SessionMonitor:
         self._last_session_map: dict[str, str] = {}  # window_key -> session_id
         # In-memory mtime cache for quick file change detection (not persisted)
         self._file_mtimes: dict[str, float] = {}  # session_id -> last_seen_mtime
+        # Sessions seen by this monitor process. Used to apply startup catch-up
+        # protection only once per session after restart.
+        self._seen_sessions: set[str] = set()
+
+    @staticmethod
+    def _truncate_emitted_text(text: str) -> str:
+        """Clamp oversized message text before enqueueing Telegram work."""
+        if len(text) <= _MAX_EMITTED_TEXT_CHARS:
+            return text
+        omitted = len(text) - _MAX_EMITTED_TEXT_CHARS
+        suffix = f"\n\n… (truncated by CCBot, omitted {omitted} chars)"
+        return text[:_MAX_EMITTED_TEXT_CHARS] + suffix
 
     def set_message_callback(
         self, callback: Callable[[NewMessage], Awaitable[None]]
@@ -281,6 +299,17 @@ class SessionMonitor:
                     if not line:
                         break
                     line_end = await f.tell()
+                    if len(line) > _MAX_JSONL_LINE_CHARS:
+                        logger.warning(
+                            "Oversized JSONL line skipped for session %s: line=%d-%d chars=%d limit=%d",
+                            session.session_id,
+                            line_start,
+                            line_end,
+                            len(line),
+                            _MAX_JSONL_LINE_CHARS,
+                        )
+                        safe_offset = line_end
+                        continue
                     data = TranscriptParser.parse_line(line)
                     if data:
                         data["__ccbot_line_start"] = line_start
@@ -352,6 +381,25 @@ class SessionMonitor:
                 except OSError:
                     continue
 
+                # Restart protection: if we are far behind on first observation
+                # of an existing tracked session, fast-forward offset to avoid
+                # blocking startup with a huge catch-up burst.
+                if session_info.session_id not in self._seen_sessions:
+                    backlog_bytes = max(0, current_size - tracked.last_byte_offset)
+                    if backlog_bytes > _MAX_INITIAL_BACKLOG_BYTES:
+                        tracked.last_byte_offset = current_size
+                        self.state.update_session(tracked)
+                        self._file_mtimes[session_info.session_id] = current_mtime
+                        self._seen_sessions.add(session_info.session_id)
+                        logger.warning(
+                            "Fast-forwarded session %s backlog on startup: skipped_bytes=%d threshold=%d",
+                            session_info.session_id,
+                            backlog_bytes,
+                            _MAX_INITIAL_BACKLOG_BYTES,
+                        )
+                        continue
+                    self._seen_sessions.add(session_info.session_id)
+
                 last_mtime = self._file_mtimes.get(session_info.session_id, 0.0)
                 if (
                     current_mtime <= last_mtime
@@ -390,17 +438,28 @@ class SessionMonitor:
                         # Skip user messages unless show_user_messages is enabled
                         if entry.role == "user" and not config.show_user_messages:
                             continue
+                        text = self._truncate_emitted_text(entry.text)
+                        if text != entry.text:
+                            logger.warning(
+                                "LineTrace clamp: trace=%s type=%s role=%s original_len=%d clamped_len=%d limit=%d",
+                                trace_id,
+                                entry.content_type,
+                                entry.role,
+                                len(entry.text),
+                                len(text),
+                                _MAX_EMITTED_TEXT_CHARS,
+                            )
                         logger.info(
                             "LineTrace in: trace=%s type=%s role=%s text_len=%d",
                             trace_id,
                             entry.content_type,
                             entry.role,
-                            len(entry.text),
+                            len(text),
                         )
                         new_messages.append(
                             NewMessage(
                                 session_id=session_info.session_id,
-                                text=entry.text,
+                                text=text,
                                 is_complete=True,
                                 content_type=entry.content_type,
                                 tool_use_id=entry.tool_use_id,
