@@ -26,9 +26,11 @@ In fact, CCBot itself was built this way — iterating on itself through Claude 
 - **Topic-based sessions** — Each Telegram topic maps 1:1 to a tmux window and agent session
 - **Real-time notifications** — Get Telegram messages for assistant responses, thinking content, tool use/result, and local command output
 - **Interactive UI** — Navigate AskUserQuestion, ExitPlanMode, and Permission Prompts via inline keyboard
+- **Voice messages** — Voice messages are transcribed via OpenAI and forwarded as text
 - **Send messages** — Forward text to the active CLI via tmux keystrokes
 - **Slash command forwarding** — Optional forwarding for unknown `/command` to the active CLI
 - **Create new sessions** — Start agent sessions from Telegram via directory browser
+- **Resume sessions** — Pick up where you left off by resuming an existing Claude session in a directory
 - **Kill sessions** — Close a topic to auto-kill the associated tmux window
 - **Message history** — Browse conversation history with pagination (newest first)
 - **Provider support** — Claude Code (`claude`) and Codex CLI (`codex`)
@@ -102,6 +104,8 @@ ALLOWED_USERS=your_telegram_user_id
 | `CCBOT_FORWARD_SLASH`   | `true` | Forward unknown `/command` to CLI |
 | `MONITOR_POLL_INTERVAL` | `2.0`      | Polling interval in seconds                      |
 | `CCBOT_SHOW_HIDDEN_DIRS` | `false` | Show hidden (dot) directories in directory browser |
+| `OPENAI_API_KEY` | _(none)_ | OpenAI API key for voice message transcription |
+| `OPENAI_BASE_URL` | `https://api.openai.com/v1` | OpenAI API base URL (for proxies or compatible APIs) |
 
 Message formatting is always HTML via `chatgpt-md-converter` (`chatgpt_md_converter` package).
 There is no runtime formatter switch to MarkdownV2.
@@ -198,11 +202,12 @@ For `CCBOT_PROVIDER=claude`, unknown `/command` is forwarded as-is (e.g. `/revie
 1. Create a new topic in the Telegram group
 2. Send any message in the topic
 3. A directory browser appears — select the project directory
-4. A tmux window is created, agent command starts, and your pending message is forwarded
+4. If the directory has existing Claude sessions, a session picker appears — choose one to resume or start fresh
+5. A tmux window is created, agent command starts (with `--resume` when selecting a Claude session), and your pending message is forwarded
 
 **Sending messages:**
 
-Once a topic is bound to a session, just send text in that topic — it gets forwarded to the active CLI via tmux keystrokes.
+Once a topic is bound to a session, just send text or voice messages in that topic — text gets forwarded to the active CLI via tmux keystrokes, and voice messages are transcribed then forwarded as text.
 
 **Killing a session:**
 
@@ -302,6 +307,7 @@ src/ccbot/
 ├── terminal_parser.py     # Terminal pane parsing (interactive UI + status line)
 ├── html_converter.py      # Markdown → Telegram HTML conversion + HTML-aware splitting
 ├── screenshot.py          # Terminal text → PNG image with ANSI color support
+├── transcribe.py          # Voice-to-text transcription via OpenAI API
 ├── utils.py               # Shared utilities (atomic JSON writes, JSONL helpers)
 ├── tmux_manager.py        # Tmux window management (list, create, send keys, kill)
 ├── fonts/                 # Bundled fonts for screenshot rendering

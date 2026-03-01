@@ -69,6 +69,7 @@
 
 Additional modules:
   screenshot.py       ─ Terminal text → PNG rendering (ANSI color, font fallback)
+  transcribe.py       ─ Voice-to-text transcription via OpenAI API (gpt-4o-transcribe)
   main.py             ─ CLI entry point
   utils.py            ─ Shared utilities (ccbot_dir, atomic_write_json)
 
@@ -78,7 +79,7 @@ Handler modules (handlers/):
   status_polling.py   ─ Background status line polling (1s interval)
   response_builder.py ─ Response pagination and formatting
   interactive_ui.py   ─ AskUserQuestion / ExitPlanMode / Permission UI
-  directory_browser.py─ Directory selection UI for new topics
+  directory_browser.py─ Directory selection + session picker UI for new topics
   cleanup.py          ─ Topic state cleanup on close/delete
   callback_data.py    ─ Callback data constants
 
