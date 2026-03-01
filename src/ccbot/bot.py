@@ -153,6 +153,7 @@ _status_poll_task: asyncio.Task | None = None
 _codex_super_turbo_until: dict[int, float] = {}
 _CODEX_SUPER_TURBO_HOLD_SECONDS = 45.0
 _port_forward_manager: PortForwardManager | None = None
+_forward_pin_message_ids: dict[int, int] = {}
 
 # Claude commands shown in bot menu (forwarded via tmux)
 CLAUDE_COMMANDS: dict[str, str] = {
@@ -1985,6 +1986,7 @@ async def _announce_forward_links(bot: Bot, tunnels: list[PortTunnel]) -> None:
                 message_id=sent.message_id,
                 disable_notification=True,
             )
+            _forward_pin_message_ids[user_id] = sent.message_id
             logger.info("Pinned forward links message for user %d", user_id)
         except Exception as e:
             logger.warning(
@@ -2065,7 +2067,7 @@ async def post_init(application: Application) -> None:
 
 
 async def post_shutdown(application: Application) -> None:
-    global _status_poll_task, _port_forward_manager
+    global _status_poll_task, _port_forward_manager, _forward_pin_message_ids
 
     # Stop status polling
     if _status_poll_task:
@@ -2088,6 +2090,26 @@ async def post_shutdown(application: Application) -> None:
         await _port_forward_manager.stop()
         _port_forward_manager = None
         logger.info("Port forwarding stopped")
+
+    for chat_id, message_id in list(_forward_pin_message_ids.items()):
+        try:
+            await application.bot.unpin_chat_message(
+                chat_id=chat_id,
+                message_id=message_id,
+            )
+            logger.info(
+                "Unpinned forward links message for user %d (message_id=%d)",
+                chat_id,
+                message_id,
+            )
+        except Exception as e:
+            logger.warning(
+                "Failed to unpin forward links message for user %d (message_id=%d): %s",
+                chat_id,
+                message_id,
+                e,
+            )
+    _forward_pin_message_ids = {}
 
     await close_transcribe_client()
 
