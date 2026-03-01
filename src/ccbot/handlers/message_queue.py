@@ -468,13 +468,6 @@ async def _process_content_task(bot: Bot, user_id: int, task: MessageTask) -> No
     tid = task.thread_id or 0
     chat_id = session_manager.resolve_chat_id(user_id, task.thread_id)
 
-    if (
-        config.provider == "codex"
-        and config.codex_catchup_enabled
-        and task.content_type == "tool_use"
-    ):
-        return
-
     # 1. Handle tool_result editing (merged parts are edited together)
     if task.content_type == "tool_result" and task.tool_use_id:
         _tkey = (task.tool_use_id, user_id, tid)

@@ -1650,17 +1650,16 @@ async def handle_new_message(msg: NewMessage, bot: Bot) -> None:
                 # UI not rendered — clear the early-set mode
                 clear_interactive_mode(user_id, thread_id)
 
-        # In codex compact mode, skip standalone non-interactive tool_use
+        # In codex super-turbo mode only, skip standalone non-interactive tool_use
         # entries and let the following tool_result deliver consolidated output.
-        if (
-            msg.is_complete
-            and config.provider == "codex"
-            and config.codex_catchup_enabled
-            and msg.content_type == "tool_use"
-            and msg.tool_name not in INTERACTIVE_TOOL_NAMES
-        ):
-            await _mark_window_read_offset(user_id, wid)
-            continue
+        if super_turbo:
+            if (
+                msg.is_complete
+                and msg.content_type == "tool_use"
+                and msg.tool_name not in INTERACTIVE_TOOL_NAMES
+            ):
+                await _mark_window_read_offset(user_id, wid)
+                continue
 
         # Any non-interactive message means the interaction is complete — delete the UI message
         if get_interactive_msg_id(user_id, thread_id):
