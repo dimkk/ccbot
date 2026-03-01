@@ -152,7 +152,6 @@ class PortForwardManager:
             "ServerAliveInterval=30",
             "-o",
             "ServerAliveCountMax=3",
-            "-N",
             "-R",
             f"80:127.0.0.1:{port}",
             "nokey@localhost.run",
