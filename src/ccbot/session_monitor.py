@@ -36,6 +36,7 @@ _MAX_JSONL_LINE_CHARS = 256_000
 _MAX_EMITTED_TEXT_CHARS = 32_000
 _MAX_INITIAL_BACKLOG_BYTES = 256_000
 _MAX_READ_BYTES_PER_CYCLE = 256_000
+_NO_MESSAGES_RECOVERY_SECONDS = 10.0
 
 
 @dataclass
@@ -100,6 +101,8 @@ class SessionMonitor:
         # Sessions seen by this monitor process. Used to apply startup catch-up
         # protection only once per session after restart.
         self._seen_sessions: set[str] = set()
+        self._last_message_monotonic: float = time.monotonic()
+        self._silence_recovery_done = False
 
     @staticmethod
     def _truncate_emitted_text(text: str) -> str:
@@ -109,6 +112,22 @@ class SessionMonitor:
         omitted = len(text) - _MAX_EMITTED_TEXT_CHARS
         suffix = f"\n\n… (truncated by CCBot, omitted {omitted} chars)"
         return text[:_MAX_EMITTED_TEXT_CHARS] + suffix
+
+    def _reset_monitor_state(self, reason: str) -> None:
+        """Hard-reset monitor state file and in-memory offsets."""
+        tracked_before = len(self.state.tracked_sessions)
+        self.state.tracked_sessions.clear()
+        self._file_mtimes.clear()
+        self._pending_tools.clear()
+        self._seen_sessions.clear()
+        self.state.save()
+        self._silence_recovery_done = True
+        self._last_message_monotonic = time.monotonic()
+        logger.warning(
+            "Monitor state reset: reason=%s removed_sessions=%d",
+            reason,
+            tracked_before,
+        )
 
     def set_message_callback(
         self, callback: Callable[[NewMessage], Awaitable[None]]
@@ -644,6 +663,20 @@ class SessionMonitor:
                 # Check for new messages (all I/O is async)
                 new_messages = await self.check_for_updates(active_session_ids)
 
+                if new_messages:
+                    self._last_message_monotonic = time.monotonic()
+                elif (
+                    active_session_ids
+                    and not self._silence_recovery_done
+                    and (
+                        time.monotonic() - self._last_message_monotonic
+                        >= _NO_MESSAGES_RECOVERY_SECONDS
+                    )
+                ):
+                    self._reset_monitor_state(
+                        f"no_messages_for_{int(_NO_MESSAGES_RECOVERY_SECONDS)}s"
+                    )
+
                 for msg in new_messages:
                     status = "complete" if msg.is_complete else "streaming"
                     preview = msg.text[:80] + ("..." if len(msg.text) > 80 else "")
@@ -666,6 +699,8 @@ class SessionMonitor:
             logger.warning("Monitor already running")
             return
         self._running = True
+        self._last_message_monotonic = time.monotonic()
+        self._silence_recovery_done = False
         self._task = asyncio.create_task(self._monitor_loop())
 
     async def stop(self) -> None:

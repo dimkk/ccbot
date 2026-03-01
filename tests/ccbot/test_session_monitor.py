@@ -180,3 +180,26 @@ class TestSessionMonitorOversizedProtection:
         assert messages == []
         assert tracked.last_byte_offset == jsonl_file.stat().st_size
         mock_read_new_lines.assert_not_called()
+
+    def test_reset_monitor_state_clears_offsets_and_writes_file(self, monitor, tmp_path):
+        state_path = tmp_path / "monitor_state.json"
+        monitor.state.state_file = state_path
+        monitor.state.tracked_sessions["a"] = TrackedSession(
+            session_id="a",
+            file_path="/tmp/a.jsonl",
+            last_byte_offset=123,
+        )
+        monitor._file_mtimes["a"] = 1.0
+        monitor._pending_tools["a"] = {"tool": "x"}
+        monitor._seen_sessions.add("a")
+
+        monitor._reset_monitor_state("test")
+
+        assert monitor.state.tracked_sessions == {}
+        assert monitor._file_mtimes == {}
+        assert monitor._pending_tools == {}
+        assert monitor._seen_sessions == set()
+        assert monitor._silence_recovery_done is True
+        assert state_path.exists()
+        payload = json.loads(state_path.read_text(encoding="utf-8"))
+        assert payload.get("tracked_sessions") == {}
