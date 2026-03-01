@@ -56,8 +56,6 @@ class TestConfigValid:
         assert cfg.codex_resume_session_id == ""
         assert cfg.supports_usage_command is False
         assert cfg.forward_slash_commands is True
-        assert cfg.codex_catchup_enabled is True
-        assert cfg.codex_catchup_threshold == 60
         assert cfg.provider_data_root == cfg.codex_sessions_path
 
     def test_codex_resume_session_id_from_agent_command(self, monkeypatch):
@@ -68,14 +66,6 @@ class TestConfigValid:
         )
         cfg = Config()
         assert cfg.codex_resume_session_id == "019c9eef-c5f7-7dc2-9e92-de59a1c3cd28"
-
-    def test_codex_catchup_settings(self, monkeypatch):
-        monkeypatch.setenv("CCBOT_PROVIDER", "codex")
-        monkeypatch.setenv("CCBOT_CODEX_CATCHUP_ENABLED", "false")
-        monkeypatch.setenv("CCBOT_CODEX_CATCHUP_THRESHOLD", "7")
-        cfg = Config()
-        assert cfg.codex_catchup_enabled is False
-        assert cfg.codex_catchup_threshold == 7
 
     def test_forward_ports(self, monkeypatch):
         monkeypatch.setenv("CCBOT_FORWARD_PORTS", "3000, 5173")

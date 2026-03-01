@@ -115,12 +115,9 @@ from .handlers.interactive_ui import (
 )
 from .handlers.message_queue import (
     clear_status_msg_info,
-    drop_low_priority_tasks_for_catchup,
     enqueue_content_message,
     enqueue_status_update,
     get_message_queue,
-    get_queue_pressure,
-    is_catchup_pressure,
     shutdown_workers,
 )
 from .handlers.message_sender import (
@@ -150,8 +147,6 @@ session_monitor: SessionMonitor | None = None
 
 # Status polling task
 _status_poll_task: asyncio.Task | None = None
-_codex_super_turbo_until: dict[int, float] = {}
-_CODEX_SUPER_TURBO_HOLD_SECONDS = 45.0
 _port_forward_manager: PortForwardManager | None = None
 _port_forward_task: asyncio.Task[None] | None = None
 _forward_pin_message_ids: dict[int, int] = {}
@@ -1808,11 +1803,6 @@ async def handle_new_message(msg: NewMessage, bot: Bot) -> None:
     status = "complete" if msg.is_complete else "streaming"
     trace_id = msg.trace_id or f"{msg.session_id}:0-0"
 
-    def _trace_age_seconds() -> float:
-        if msg.detected_at_monotonic <= 0:
-            return 0.0
-        return max(0.0, time.monotonic() - msg.detected_at_monotonic)
-
     logger.info(
         "handle_new_message [%s]: trace=%s session=%s text_len=%d",
         status,
@@ -1845,53 +1835,6 @@ async def handle_new_message(msg: NewMessage, bot: Bot) -> None:
 
     for user_id, wid, thread_id in active_users:
         queue = get_message_queue(user_id)
-        queue_size, send_ops, oldest_age_seconds = get_queue_pressure(user_id)
-
-        super_turbo = False
-        if config.provider == "codex" and config.codex_catchup_enabled:
-            now = time.monotonic()
-            until = _codex_super_turbo_until.get(user_id, 0.0)
-            if is_catchup_pressure(queue_size, send_ops, oldest_age_seconds):
-                if until <= now:
-                    dropped = await drop_low_priority_tasks_for_catchup(user_id)
-                    logger.warning(
-                        "Super turbo ON: user=%d queue=%d ops=%d lag=%.1fs dropped=%d threshold=%d",
-                        user_id,
-                        queue_size,
-                        send_ops,
-                        oldest_age_seconds,
-                        dropped,
-                        config.codex_catchup_threshold,
-                    )
-                until = max(
-                    until,
-                    now + _CODEX_SUPER_TURBO_HOLD_SECONDS,
-                )
-                _codex_super_turbo_until[user_id] = until
-            super_turbo = until > now
-            if not super_turbo:
-                _codex_super_turbo_until.pop(user_id, None)
-
-        if super_turbo and msg.is_complete:
-            keep_in_super = msg.role == "assistant" and msg.content_type in (
-                "text",
-                "local_command",
-            )
-            if (
-                msg.content_type == "tool_use"
-                and msg.tool_name in INTERACTIVE_TOOL_NAMES
-            ):
-                keep_in_super = True
-            if not keep_in_super:
-                logger.info(
-                    "LineTrace drop: trace=%s user=%d reason=super_turbo content_type=%s trace_age=%.3fs",
-                    trace_id,
-                    user_id,
-                    msg.content_type,
-                    _trace_age_seconds(),
-                )
-                await _mark_window_read_offset(user_id, wid)
-                continue
 
         # Handle interactive tools specially - capture terminal and send UI
         if msg.tool_name in INTERACTIVE_TOOL_NAMES and msg.content_type == "tool_use":
@@ -1909,23 +1852,6 @@ async def handle_new_message(msg: NewMessage, bot: Bot) -> None:
             else:
                 # UI not rendered — clear the early-set mode
                 clear_interactive_mode(user_id, thread_id)
-
-        # In codex super-turbo mode only, skip standalone non-interactive tool_use
-        # entries and let the following tool_result deliver consolidated output.
-        if super_turbo:
-            if (
-                msg.is_complete
-                and msg.content_type == "tool_use"
-                and msg.tool_name not in INTERACTIVE_TOOL_NAMES
-            ):
-                logger.info(
-                    "LineTrace drop: trace=%s user=%d reason=super_turbo_tool_use trace_age=%.3fs",
-                    trace_id,
-                    user_id,
-                    _trace_age_seconds(),
-                )
-                await _mark_window_read_offset(user_id, wid)
-                continue
 
         # Any non-interactive message means the interaction is complete — delete the UI message
         if get_interactive_msg_id(user_id, thread_id):

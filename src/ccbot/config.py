@@ -104,19 +104,6 @@ class Config:
         self.forward_slash_commands = (
             os.getenv("CCBOT_FORWARD_SLASH", slash_default).lower() == "true"
         )
-        # Codex catch-up mode:
-        # - enabled: whether to allow compact/drop strategy under load
-        # - threshold: pressure threshold (queue/send ops/lag seconds)
-        self.codex_catchup_enabled = (
-            os.getenv("CCBOT_CODEX_CATCHUP_ENABLED", "true").lower() == "true"
-        )
-        try:
-            self.codex_catchup_threshold = max(
-                1,
-                int(os.getenv("CCBOT_CODEX_CATCHUP_THRESHOLD", "60")),
-            )
-        except ValueError:
-            self.codex_catchup_threshold = 60
 
         # All state files live under config_dir
         self.state_file = self.config_dir / "state.json"

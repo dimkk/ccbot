@@ -27,7 +27,6 @@ from telegram import Bot
 from telegram.constants import ChatAction
 from telegram.error import RetryAfter
 
-from ..config import config
 from ..markdown_v2 import convert_markdown
 from ..session import session_manager
 from ..terminal_parser import parse_status_line
@@ -88,9 +87,8 @@ _status_msg_info: dict[tuple[int, int], tuple[int, str, str]] = {}
 # Flood control: user_id -> monotonic time when ban expires
 _flood_until: dict[int, float] = {}
 
-# Max seconds to wait for flood control before dropping tasks
+# Max seconds to wait for flood control before pausing delivery
 FLOOD_CONTROL_MAX_WAIT = 10
-_LOW_PRIORITY_CONTENT_TYPES = frozenset({"thinking", "tool_use", "tool_result"})
 
 
 def _trace_age_seconds(now: float, detected_at: float) -> float:
@@ -129,122 +127,6 @@ def _inspect_queue(queue: asyncio.Queue[MessageTask]) -> list[MessageTask]:
         except asyncio.QueueEmpty:
             break
     return items
-
-
-async def drop_low_priority_tasks_for_catchup(user_id: int) -> int:
-    """Drop queued low-priority tasks to reduce delivery lag.
-
-    Drops:
-      - status_update/status_clear tasks
-      - content tasks of type thinking/tool_use/tool_result
-    """
-    queue = _message_queues.get(user_id)
-    lock = _queue_locks.get(user_id)
-    if queue is None or lock is None:
-        return 0
-
-    dropped = 0
-    dropped_traces: list[str] = []
-    max_trace_age = 0.0
-    max_queue_wait = 0.0
-    async with lock:
-        items = _inspect_queue(queue)
-        kept: list[MessageTask] = []
-
-        for task in items:
-            if task.task_type in ("status_update", "status_clear"):
-                dropped += 1
-                if task.trace_id:
-                    dropped_traces.append(task.trace_id)
-                now = time.monotonic()
-                max_trace_age = max(
-                    max_trace_age, _trace_age_seconds(now, task.trace_detected_at)
-                )
-                max_queue_wait = max(max_queue_wait, max(0.0, now - task.created_at))
-                continue
-            if (
-                task.task_type == "content"
-                and task.content_type in _LOW_PRIORITY_CONTENT_TYPES
-            ):
-                dropped += 1
-                if task.trace_id:
-                    dropped_traces.append(task.trace_id)
-                now = time.monotonic()
-                max_trace_age = max(
-                    max_trace_age, _trace_age_seconds(now, task.trace_detected_at)
-                )
-                max_queue_wait = max(max_queue_wait, max(0.0, now - task.created_at))
-                continue
-            kept.append(task)
-
-        for task in kept:
-            queue.put_nowait(task)
-            # Compensate extra unfinished_tasks increment from put_nowait.
-            queue.task_done()
-
-        # Removed tasks will never be processed by worker; close their
-        # unfinished_tasks counters now.
-        for _ in range(dropped):
-            queue.task_done()
-
-    if dropped > 0:
-        sample = ",".join(dropped_traces[:5]) if dropped_traces else "-"
-        logger.info(
-            "LineTrace drop_batch: user=%d dropped=%d sample_traces=%s max_trace_age=%.3fs max_queue_wait=%.3fs",
-            user_id,
-            dropped,
-            sample,
-            max_trace_age,
-            max_queue_wait,
-        )
-    return dropped
-
-
-def get_queue_pressure(user_id: int) -> tuple[int, int, float]:
-    """Estimate queue pressure as (task_count, send_ops, oldest_age_seconds)."""
-    queue = _message_queues.get(user_id)
-    if queue is None:
-        return 0, 0, 0.0
-
-    task_count = queue.qsize()
-    if task_count == 0:
-        return 0, 0, 0.0
-
-    try:
-        # asyncio.Queue stores tasks in deque internally.
-        queued = list(queue._queue)  # type: ignore[attr-defined]
-    except Exception:
-        return task_count, task_count, 0.0
-
-    now = time.monotonic()
-    oldest_age_seconds = 0.0
-    if queued and isinstance(queued[0], MessageTask):
-        oldest_age_seconds = max(0.0, now - queued[0].created_at)
-
-    send_ops = 0
-    for task in queued:
-        if not isinstance(task, MessageTask):
-            send_ops += 1
-            continue
-        if task.task_type == "content":
-            send_ops += max(1, len(task.parts))
-            if task.image_data:
-                # send_photo/send_media_group both cost one Telegram API call.
-                send_ops += 1
-        else:
-            send_ops += 1
-
-    return task_count, send_ops, oldest_age_seconds
-
-
-def is_catchup_pressure(task_count: int, send_ops: int, oldest_age_seconds: float) -> bool:
-    """Check whether queue pressure reached codex catch-up threshold."""
-    threshold = config.codex_catchup_threshold
-    return (
-        task_count >= threshold
-        or send_ops >= threshold
-        or oldest_age_seconds >= float(threshold)
-    )
 
 
 def _can_merge_tasks(base: MessageTask, candidate: MessageTask) -> bool:
@@ -343,21 +225,6 @@ async def _message_queue_worker(bot: Bot, user_id: int) -> None:
         try:
             task = await queue.get()
             try:
-                if config.provider == "codex" and config.codex_catchup_enabled:
-                    task_count, send_ops, oldest_age_seconds = get_queue_pressure(user_id)
-                    if is_catchup_pressure(task_count, send_ops, oldest_age_seconds):
-                        dropped = await drop_low_priority_tasks_for_catchup(user_id)
-                        if dropped > 0:
-                            logger.warning(
-                                "Catch-up sweep: user=%d queue=%d ops=%d lag=%.1fs dropped=%d threshold=%d",
-                                user_id,
-                                task_count,
-                                send_ops,
-                                oldest_age_seconds,
-                                dropped,
-                                config.codex_catchup_threshold,
-                            )
-
                 # Flood control: drop status, wait for content in short chunks.
                 drop_current_task = False
                 while True:
@@ -376,34 +243,8 @@ async def _message_queue_worker(bot: Bot, user_id: int) -> None:
                         drop_current_task = True
                         break
 
-                    if (
-                        config.provider == "codex"
-                        and config.codex_catchup_enabled
-                        and task.content_type in _LOW_PRIORITY_CONTENT_TYPES
-                    ):
-                        now = time.monotonic()
-                        logger.warning(
-                            "LineTrace drop: trace=%s user=%d reason=flood_control_active content_type=%s retry_in=%ds trace_age=%.3fs queue_wait=%.3fs",
-                            task.trace_id or "-",
-                            user_id,
-                            task.content_type,
-                            int(remaining),
-                            _trace_age_seconds(now, task.trace_detected_at),
-                            max(0.0, now - task.created_at),
-                        )
-                        drop_current_task = True
-                        break
-
-                    # Sleep in short chunks so catch-up cleanup can run while paused.
+                    # Sleep in short chunks so queue can react promptly.
                     sleep_for = min(remaining, FLOOD_CONTROL_MAX_WAIT)
-                    if config.provider == "codex" and config.codex_catchup_enabled:
-                        dropped = await drop_low_priority_tasks_for_catchup(user_id)
-                        if dropped > 0:
-                            logger.warning(
-                                "Flood catch-up: user=%d dropped=%d while waiting",
-                                user_id,
-                                dropped,
-                            )
                     logger.debug(
                         "Flood controlled: waiting %.0fs for content (user %d)",
                         sleep_for,
@@ -443,24 +284,6 @@ async def _message_queue_worker(bot: Bot, user_id: int) -> None:
                         retry_secs,
                         task.task_type,
                         user_id,
-                    )
-                    continue
-                if (
-                    config.provider == "codex"
-                    and config.codex_catchup_enabled
-                    and task.content_type in _LOW_PRIORITY_CONTENT_TYPES
-                ):
-                    if retry_secs > FLOOD_CONTROL_MAX_WAIT:
-                        _flood_until[user_id] = time.monotonic() + retry_secs
-                    now = time.monotonic()
-                    logger.warning(
-                        "LineTrace drop: trace=%s user=%d reason=retry_after_low_priority content_type=%s retry_after=%ds trace_age=%.3fs queue_wait=%.3fs",
-                        task.trace_id or "-",
-                        user_id,
-                        task.content_type,
-                        retry_secs,
-                        _trace_age_seconds(now, task.trace_detected_at),
-                        max(0.0, now - task.created_at),
                     )
                     continue
                 if retry_secs > FLOOD_CONTROL_MAX_WAIT:
