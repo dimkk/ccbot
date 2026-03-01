@@ -23,6 +23,7 @@ import time
 from telegram import Bot
 from telegram.error import BadRequest
 
+from ..config import config
 from ..session import session_manager
 from ..terminal_parser import is_interactive_ui, parse_status_line
 from ..tmux_manager import tmux_manager
@@ -76,7 +77,9 @@ async def update_status_message(
     interactive_window = get_interactive_window(user_id, thread_id)
     should_check_new_ui = True
 
-    if interactive_window == window_id:
+    supports_interactive_ui = config.supports_claude_interactive_ui
+
+    if supports_interactive_ui and interactive_window == window_id:
         # User is in interactive mode for THIS window
         if is_interactive_ui(pane_text):
             # Interactive UI still showing — skip status update (user is interacting)
@@ -85,14 +88,13 @@ async def update_status_message(
         # Don't re-check for new UI this cycle (the old one just disappeared).
         await clear_interactive_msg(user_id, bot, thread_id)
         should_check_new_ui = False
-    elif interactive_window is not None:
+    elif supports_interactive_ui and interactive_window is not None:
         # User is in interactive mode for a DIFFERENT window (window switched)
         # Clear stale interactive mode
         await clear_interactive_msg(user_id, bot, thread_id)
 
     # Check for permission prompt (interactive UI not triggered via JSONL)
-    # ALWAYS check UI, regardless of skip_status
-    if should_check_new_ui and is_interactive_ui(pane_text):
+    if supports_interactive_ui and should_check_new_ui and is_interactive_ui(pane_text):
         logger.debug(
             "Interactive UI detected in polling (user=%d, window=%s, thread=%s)",
             user_id,
@@ -132,6 +134,9 @@ async def status_poll_loop(bot: Bot) -> None:
                 for user_id, thread_id, wid in list(
                     session_manager.iter_thread_bindings()
                 ):
+                    # Private chat binding (synthetic thread_id=0): no topic probe.
+                    if thread_id <= 0:
+                        continue
                     try:
                         await bot.unpin_all_forum_topic_messages(
                             chat_id=session_manager.resolve_chat_id(user_id, thread_id),
@@ -190,7 +195,7 @@ async def status_poll_loop(bot: Bot) -> None:
                         bot,
                         user_id,
                         wid,
-                        thread_id=thread_id,
+                        thread_id=thread_id or None,
                         skip_status=skip_status,
                     )
                 except Exception as e:
