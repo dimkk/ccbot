@@ -153,6 +153,7 @@ _status_poll_task: asyncio.Task | None = None
 _codex_super_turbo_until: dict[int, float] = {}
 _CODEX_SUPER_TURBO_HOLD_SECONDS = 45.0
 _port_forward_manager: PortForwardManager | None = None
+_port_forward_task: asyncio.Task[None] | None = None
 _forward_pin_message_ids: dict[int, int] = {}
 
 # Claude commands shown in bot menu (forwarded via tmux)
@@ -2003,11 +2004,28 @@ async def _announce_forward_error(bot: Bot, error_text: str) -> None:
         await send_with_fallback(bot, user_id, text)
 
 
+async def _run_port_forwarding(bot: Bot) -> None:
+    """Start forwarding in background and announce links/errors."""
+    global _port_forward_manager
+    manager = PortForwardManager(config.forward_ports)
+    try:
+        tunnels = await manager.start()
+        _port_forward_manager = manager
+        await _announce_forward_links(bot, tunnels)
+    except asyncio.CancelledError:
+        await manager.stop()
+        raise
+    except Exception as e:
+        logger.error("Forwarding startup failed: %s", e)
+        await _announce_forward_error(bot, str(e))
+        await manager.stop()
+
+
 # --- App lifecycle ---
 
 
 async def post_init(application: Application) -> None:
-    global session_monitor, _status_poll_task, _port_forward_manager
+    global session_monitor, _status_poll_task, _port_forward_task
 
     await application.bot.delete_my_commands()
 
@@ -2028,14 +2046,8 @@ async def post_init(application: Application) -> None:
     await application.bot.set_my_commands(bot_commands)
 
     if config.forward_ports:
-        manager = PortForwardManager(config.forward_ports)
-        try:
-            tunnels = await manager.start()
-            _port_forward_manager = manager
-            await _announce_forward_links(application.bot, tunnels)
-        except Exception as e:
-            logger.error("Forwarding startup failed: %s", e)
-            await _announce_forward_error(application.bot, str(e))
+        _port_forward_task = asyncio.create_task(_run_port_forwarding(application.bot))
+        logger.info("Port forwarding task started for ports: %s", config.forward_ports)
 
     # Re-resolve stale window IDs from persisted state against live tmux windows
     await session_manager.resolve_stale_ids()
@@ -2067,7 +2079,7 @@ async def post_init(application: Application) -> None:
 
 
 async def post_shutdown(application: Application) -> None:
-    global _status_poll_task, _port_forward_manager, _forward_pin_message_ids
+    global _status_poll_task
 
     # Stop status polling
     if _status_poll_task:
@@ -2085,6 +2097,22 @@ async def post_shutdown(application: Application) -> None:
     if session_monitor:
         await session_monitor.stop()
         logger.info("Session monitor stopped")
+
+    await close_transcribe_client()
+
+
+async def post_stop(application: Application) -> None:
+    """Run before shutdown while Telegram HTTP client is still active."""
+    global _port_forward_task, _port_forward_manager, _forward_pin_message_ids
+
+    if _port_forward_task:
+        if not _port_forward_task.done():
+            _port_forward_task.cancel()
+            try:
+                await _port_forward_task
+            except asyncio.CancelledError:
+                pass
+        _port_forward_task = None
 
     if _port_forward_manager:
         await _port_forward_manager.stop()
@@ -2111,8 +2139,6 @@ async def post_shutdown(application: Application) -> None:
             )
     _forward_pin_message_ids = {}
 
-    await close_transcribe_client()
-
 
 def create_bot() -> Application:
     application = (
@@ -2120,6 +2146,7 @@ def create_bot() -> Application:
         .token(config.telegram_bot_token)
         .rate_limiter(AIORateLimiter(max_retries=5))
         .post_init(post_init)
+        .post_stop(post_stop)
         .post_shutdown(post_shutdown)
         .build()
     )
