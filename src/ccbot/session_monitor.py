@@ -34,7 +34,8 @@ logger = logging.getLogger(__name__)
 # These values intentionally avoid additional env knobs.
 _MAX_JSONL_LINE_CHARS = 256_000
 _MAX_EMITTED_TEXT_CHARS = 32_000
-_MAX_INITIAL_BACKLOG_BYTES = 1_000_000
+_MAX_INITIAL_BACKLOG_BYTES = 256_000
+_MAX_READ_BYTES_PER_CYCLE = 256_000
 
 
 @dataclass
@@ -293,12 +294,14 @@ class SessionMonitor:
                 # successfully. A non-empty line that fails JSON parsing is
                 # likely a partial write; stop and retry next cycle.
                 safe_offset = session.last_byte_offset
+                processed_bytes = 0
                 while True:
                     line_start = await f.tell()
                     line = await f.readline()
                     if not line:
                         break
                     line_end = await f.tell()
+                    processed_bytes += line_end - line_start
                     if len(line) > _MAX_JSONL_LINE_CHARS:
                         logger.warning(
                             "Oversized JSONL line skipped for session %s: line=%d-%d chars=%d limit=%d",
@@ -326,6 +329,15 @@ class SessionMonitor:
                     else:
                         # Empty line — safe to skip
                         safe_offset = line_end
+
+                    if processed_bytes >= _MAX_READ_BYTES_PER_CYCLE:
+                        logger.warning(
+                            "Read cycle capped for session %s: processed_bytes=%d limit=%d",
+                            session.session_id,
+                            processed_bytes,
+                            _MAX_READ_BYTES_PER_CYCLE,
+                        )
+                        break
 
                 session.last_byte_offset = safe_offset
 

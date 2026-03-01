@@ -142,6 +142,9 @@ from .utils import ccbot_dir
 
 logger = logging.getLogger(__name__)
 
+# Keep startup responsive even when tmux/state files are slow.
+_POST_INIT_RESOLVE_TIMEOUT_SECONDS = 8.0
+
 # Session monitor instance
 session_monitor: SessionMonitor | None = None
 
@@ -2070,8 +2073,20 @@ async def post_init(application: Application) -> None:
         _port_forward_task = asyncio.create_task(_run_port_forwarding(application.bot))
         logger.info("Port forwarding task started for ports: %s", config.forward_ports)
 
-    # Re-resolve stale window IDs from persisted state against live tmux windows
-    await session_manager.resolve_stale_ids()
+    # Re-resolve stale window IDs from persisted state against live tmux windows.
+    # Guard with timeout so bot startup never hangs on slow tmux/state I/O.
+    try:
+        await asyncio.wait_for(
+            session_manager.resolve_stale_ids(),
+            timeout=_POST_INIT_RESOLVE_TIMEOUT_SECONDS,
+        )
+    except asyncio.TimeoutError:
+        logger.warning(
+            "Startup timeout: resolve_stale_ids exceeded %.1fs; continuing",
+            _POST_INIT_RESOLVE_TIMEOUT_SECONDS,
+        )
+    except Exception as e:
+        logger.warning("Startup warning: resolve_stale_ids failed: %s", e)
 
     # Pre-fill global rate limiter bucket on restart.
     # AsyncLimiter starts at _level=0 (full burst capacity), but Telegram's
