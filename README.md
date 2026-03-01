@@ -101,6 +101,7 @@ ALLOWED_USERS=your_telegram_user_id
 | `CCBOT_CODEX_SESSIONS_PATH` | `~/.codex/sessions` | Codex rollout root path |
 | `CCBOT_CODEX_CATCHUP_ENABLED` | `true` | Enable Codex catch-up mode under backlog |
 | `CCBOT_CODEX_CATCHUP_THRESHOLD` | `60` | Codex catch-up threshold (queue tasks, estimated send ops, or lag seconds) |
+| `CCBOT_FORWARD_PORTS` | _(none)_ | Comma-separated local ports to expose publicly on startup (e.g. `3000,5173`) |
 | `CCBOT_FORWARD_SLASH`   | `true` | Forward unknown `/command` to CLI |
 | `MONITOR_POLL_INTERVAL` | `2.0`      | Polling interval in seconds                      |
 | `CCBOT_SHOW_HIDDEN_DIRS` | `false` | Show hidden (dot) directories in directory browser |
@@ -169,6 +170,20 @@ CCBOT_PROVIDER=codex CCBOT_AGENT_COMMAND=codex uv run ccbot
 ```
 
 You can also place these values in `~/.ccbot/.env`.
+
+### Port Forwarding
+
+Expose a local dev port and auto-send/pin the public link to all allowed users:
+
+```bash
+uv run ccbot --forward 3000
+```
+
+Multiple ports:
+
+```bash
+uv run ccbot --forward 3000 --forward 5173
+```
 
 ### Commands
 

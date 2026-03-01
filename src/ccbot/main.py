@@ -8,8 +8,40 @@ Handles two execution modes:
 """
 
 import asyncio
+import argparse
 import logging
+import os
 import sys
+
+
+def _parse_forward_ports(args: list[str]) -> list[int]:
+    parser = argparse.ArgumentParser(
+        prog="ccbot",
+        description="Telegram monitor for AI CLI sessions",
+    )
+    parser.add_argument(
+        "--forward",
+        action="append",
+        default=[],
+        metavar="PORT[,PORT...]",
+        help="Forward local port(s) to public URL and announce in Telegram",
+    )
+    parsed = parser.parse_args(args)
+
+    ports: list[int] = []
+    for group in parsed.forward:
+        for token in group.split(","):
+            part = token.strip()
+            if not part:
+                continue
+            try:
+                port = int(part)
+            except ValueError as e:
+                raise SystemExit(f"Invalid --forward value: {part}") from e
+            if port < 1 or port > 65535:
+                raise SystemExit(f"Invalid --forward port: {port}")
+            ports.append(port)
+    return ports
 
 
 def main() -> None:
@@ -26,6 +58,10 @@ def main() -> None:
         changed = asyncio.run(codex_session_mapper.sync_session_map())
         print("updated" if changed else "no changes")
         return
+
+    forward_ports = _parse_forward_ports(sys.argv[1:])
+    if forward_ports:
+        os.environ["CCBOT_FORWARD_PORTS"] = ",".join(str(p) for p in forward_ports)
 
     logging.basicConfig(
         format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",

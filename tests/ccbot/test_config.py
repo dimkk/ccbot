@@ -77,6 +77,11 @@ class TestConfigValid:
         assert cfg.codex_catchup_enabled is False
         assert cfg.codex_catchup_threshold == 7
 
+    def test_forward_ports(self, monkeypatch):
+        monkeypatch.setenv("CCBOT_FORWARD_PORTS", "3000, 5173")
+        cfg = Config()
+        assert cfg.forward_ports == [3000, 5173]
+
 
 @pytest.mark.usefixtures("_base_env")
 class TestConfigMissingEnv:
@@ -98,6 +103,11 @@ class TestConfigMissingEnv:
     def test_invalid_provider(self, monkeypatch):
         monkeypatch.setenv("CCBOT_PROVIDER", "bad-provider")
         with pytest.raises(ValueError, match="CCBOT_PROVIDER"):
+            Config()
+
+    def test_invalid_forward_ports(self, monkeypatch):
+        monkeypatch.setenv("CCBOT_FORWARD_PORTS", "abc")
+        with pytest.raises(ValueError, match="CCBOT_FORWARD_PORTS"):
             Config()
 
 

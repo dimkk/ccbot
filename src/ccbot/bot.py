@@ -133,6 +133,7 @@ from .handlers.message_sender import (
 from .markdown_v2 import convert_markdown
 from .handlers.response_builder import build_response_parts
 from .handlers.status_polling import status_poll_loop
+from .port_forward import PortForwardManager, PortTunnel
 from .screenshot import text_to_image
 from .session import session_manager
 from .session_monitor import NewMessage, SessionMonitor
@@ -151,6 +152,7 @@ session_monitor: SessionMonitor | None = None
 _status_poll_task: asyncio.Task | None = None
 _codex_super_turbo_until: dict[int, float] = {}
 _CODEX_SUPER_TURBO_HOLD_SECONDS = 45.0
+_port_forward_manager: PortForwardManager | None = None
 
 # Claude commands shown in bot menu (forwarded via tmux)
 CLAUDE_COMMANDS: dict[str, str] = {
@@ -1958,11 +1960,52 @@ async def handle_new_message(msg: NewMessage, bot: Bot) -> None:
             await _mark_window_read_offset(user_id, wid)
 
 
+async def _announce_forward_links(bot: Bot, tunnels: list[PortTunnel]) -> None:
+    """Send and pin forward links for allowed users."""
+    lines = [
+        "🌐 Dev port forwarding is enabled.",
+        "",
+    ]
+    for tunnel in tunnels:
+        lines.append(
+            f"- `localhost:{tunnel.port}` → {tunnel.public_url} ({tunnel.provider})"
+        )
+    text = "\n".join(lines)
+
+    for user_id in sorted(config.allowed_users):
+        sent = await send_with_fallback(bot, user_id, text)
+        if sent is None:
+            logger.warning(
+                "Failed to announce forward links to user %d", user_id
+            )
+            continue
+        try:
+            await bot.pin_chat_message(
+                chat_id=user_id,
+                message_id=sent.message_id,
+                disable_notification=True,
+            )
+            logger.info("Pinned forward links message for user %d", user_id)
+        except Exception as e:
+            logger.warning(
+                "Failed to pin forward links message for user %d: %s", user_id, e
+            )
+
+
+async def _announce_forward_error(bot: Bot, error_text: str) -> None:
+    text = (
+        "⚠ Failed to start dev port forwarding.\n\n"
+        f"{error_text}"
+    )
+    for user_id in sorted(config.allowed_users):
+        await send_with_fallback(bot, user_id, text)
+
+
 # --- App lifecycle ---
 
 
 async def post_init(application: Application) -> None:
-    global session_monitor, _status_poll_task
+    global session_monitor, _status_poll_task, _port_forward_manager
 
     await application.bot.delete_my_commands()
 
@@ -1981,6 +2024,16 @@ async def post_init(application: Application) -> None:
         bot_commands.append(BotCommand(cmd_name, desc))
 
     await application.bot.set_my_commands(bot_commands)
+
+    if config.forward_ports:
+        manager = PortForwardManager(config.forward_ports)
+        try:
+            tunnels = await manager.start()
+            _port_forward_manager = manager
+            await _announce_forward_links(application.bot, tunnels)
+        except Exception as e:
+            logger.error("Forwarding startup failed: %s", e)
+            await _announce_forward_error(application.bot, str(e))
 
     # Re-resolve stale window IDs from persisted state against live tmux windows
     await session_manager.resolve_stale_ids()
@@ -2012,7 +2065,7 @@ async def post_init(application: Application) -> None:
 
 
 async def post_shutdown(application: Application) -> None:
-    global _status_poll_task
+    global _status_poll_task, _port_forward_manager
 
     # Stop status polling
     if _status_poll_task:
@@ -2030,6 +2083,11 @@ async def post_shutdown(application: Application) -> None:
     if session_monitor:
         await session_monitor.stop()
         logger.info("Session monitor stopped")
+
+    if _port_forward_manager:
+        await _port_forward_manager.stop()
+        _port_forward_manager = None
+        logger.info("Port forwarding stopped")
 
     await close_transcribe_client()
 

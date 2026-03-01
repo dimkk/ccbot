@@ -166,6 +166,27 @@ class Config:
             "OPENAI_BASE_URL", "https://api.openai.com/v1"
         )
 
+        # Optional local port forwarding announcement on startup
+        # Format: "3000" or "3000,5173"
+        self.forward_ports: list[int] = []
+        forward_ports_raw = os.getenv("CCBOT_FORWARD_PORTS", "").strip()
+        if forward_ports_raw:
+            for token in forward_ports_raw.split(","):
+                part = token.strip()
+                if not part:
+                    continue
+                try:
+                    port = int(part)
+                except ValueError as e:
+                    raise ValueError(
+                        f"CCBOT_FORWARD_PORTS contains non-numeric port: {part}"
+                    ) from e
+                if port < 1 or port > 65535:
+                    raise ValueError(
+                        f"CCBOT_FORWARD_PORTS contains invalid port: {port}"
+                    )
+                self.forward_ports.append(port)
+
         # Scrub sensitive vars from os.environ so child processes never inherit them.
         # Values are already captured in Config attributes above.
         for var in SENSITIVE_ENV_VARS:
