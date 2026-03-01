@@ -703,6 +703,9 @@ class SessionManager:
         """Update the user's last read offset for a window."""
         if user_id not in self.user_window_offsets:
             self.user_window_offsets[user_id] = {}
+        prev = self.user_window_offsets[user_id].get(window_id)
+        if prev == offset:
+            return
         self.user_window_offsets[user_id][window_id] = offset
         self._save_state()
 

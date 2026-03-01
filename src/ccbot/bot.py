@@ -110,6 +110,8 @@ from .handlers.message_queue import (
     enqueue_content_message,
     enqueue_status_update,
     get_message_queue,
+    get_queue_pressure,
+    is_catchup_pressure,
     shutdown_workers,
 )
 from .handlers.message_sender import (
@@ -1590,19 +1592,21 @@ async def handle_new_message(msg: NewMessage, bot: Bot) -> None:
 
     for user_id, wid, thread_id in active_users:
         queue = get_message_queue(user_id)
-        queue_size = queue.qsize() if queue is not None else 0
+        queue_size, send_ops, oldest_age_seconds = get_queue_pressure(user_id)
 
         super_turbo = False
         if config.provider == "codex" and config.codex_catchup_enabled:
             now = time.monotonic()
             until = _codex_super_turbo_until.get(user_id, 0.0)
-            if queue_size >= config.codex_catchup_threshold:
+            if is_catchup_pressure(queue_size, send_ops, oldest_age_seconds):
                 if until <= now:
                     dropped = await drop_low_priority_tasks_for_catchup(user_id)
                     logger.warning(
-                        "Super turbo ON: user=%d queue=%d dropped=%d threshold=%d",
+                        "Super turbo ON: user=%d queue=%d ops=%d lag=%.1fs dropped=%d threshold=%d",
                         user_id,
                         queue_size,
+                        send_ops,
+                        oldest_age_seconds,
                         dropped,
                         config.codex_catchup_threshold,
                     )

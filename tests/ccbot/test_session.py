@@ -150,6 +150,25 @@ class TestDisplayNames:
         assert mgr.get_display_name("@1") == "@1"
 
 
+class TestOffsets:
+    def test_update_user_window_offset_skips_unchanged_value(
+        self, mgr: SessionManager, monkeypatch
+    ) -> None:
+        save_calls = 0
+
+        def fake_save_state() -> None:
+            nonlocal save_calls
+            save_calls += 1
+
+        monkeypatch.setattr(mgr, "_save_state", fake_save_state)
+
+        mgr.update_user_window_offset(100, "@1", 123)
+        mgr.update_user_window_offset(100, "@1", 123)
+        mgr.update_user_window_offset(100, "@1", 124)
+
+        assert save_calls == 2
+
+
 class TestIsWindowId:
     def test_valid_ids(self, mgr: SessionManager) -> None:
         assert mgr._is_window_id("@0") is True

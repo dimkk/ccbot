@@ -98,7 +98,7 @@ ALLOWED_USERS=your_telegram_user_id
 | `CLAUDE_COMMAND`        | `claude`   | Backward-compatible alias for `CCBOT_AGENT_COMMAND` |
 | `CCBOT_CODEX_SESSIONS_PATH` | `~/.codex/sessions` | Codex rollout root path |
 | `CCBOT_CODEX_CATCHUP_ENABLED` | `true` | Enable Codex catch-up mode under backlog |
-| `CCBOT_CODEX_CATCHUP_THRESHOLD` | `60` | Queue size threshold to trigger Codex super-turbo catch-up |
+| `CCBOT_CODEX_CATCHUP_THRESHOLD` | `60` | Codex catch-up threshold (queue tasks, estimated send ops, or lag seconds) |
 | `CCBOT_FORWARD_SLASH`   | `true` | Forward unknown `/command` to CLI |
 | `MONITOR_POLL_INTERVAL` | `2.0`      | Polling interval in seconds                      |
 | `CCBOT_SHOW_HIDDEN_DIRS` | `false` | Show hidden (dot) directories in directory browser |

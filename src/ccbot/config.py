@@ -106,7 +106,7 @@ class Config:
         )
         # Codex catch-up mode:
         # - enabled: whether to allow compact/drop strategy under load
-        # - threshold: queue size when catch-up starts
+        # - threshold: pressure threshold (queue/send ops/lag seconds)
         self.codex_catchup_enabled = (
             os.getenv("CCBOT_CODEX_CATCHUP_ENABLED", "true").lower() == "true"
         )
