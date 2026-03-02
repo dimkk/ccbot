@@ -12,6 +12,7 @@ Key classes: SessionMonitor, NewMessage, SessionInfo.
 """
 
 import asyncio
+import hashlib
 import json
 import logging
 import time
@@ -37,6 +38,12 @@ _MAX_EMITTED_TEXT_CHARS = 32_000
 _MAX_INITIAL_BACKLOG_BYTES = 256_000
 _MAX_READ_BYTES_PER_CYCLE = 256_000
 _NO_MESSAGES_RECOVERY_SECONDS = 10.0
+_MAX_DUPLICATE_OFFSET_GAP_BYTES = 8_192
+_CODEX_MAPPER_SYNC_INTERVAL_SECONDS = 15.0
+_CODEX_MAPPER_SYNC_TIMEOUT_SECONDS = 5.0
+_LOAD_SESSION_MAP_TIMEOUT_SECONDS = 5.0
+_DETECT_CLEANUP_TIMEOUT_SECONDS = 5.0
+_CHECK_UPDATES_TIMEOUT_SECONDS = 8.0
 
 
 @dataclass
@@ -101,8 +108,13 @@ class SessionMonitor:
         # Sessions seen by this monitor process. Used to apply startup catch-up
         # protection only once per session after restart.
         self._seen_sessions: set[str] = set()
+        # Last emitted message fingerprint per session for duplicate suppression.
+        self._last_emitted_fingerprint: dict[
+            str, tuple[tuple[str, str, str, int, str], int]
+        ] = {}
         self._last_message_monotonic: float = time.monotonic()
         self._silence_recovery_done = False
+        self._last_codex_mapper_sync: float = 0.0
 
     @staticmethod
     def _truncate_emitted_text(text: str) -> str:
@@ -120,6 +132,7 @@ class SessionMonitor:
         self._file_mtimes.clear()
         self._pending_tools.clear()
         self._seen_sessions.clear()
+        self._last_emitted_fingerprint.clear()
         self.state.save()
         self._silence_recovery_done = True
         self._last_message_monotonic = time.monotonic()
@@ -128,6 +141,30 @@ class SessionMonitor:
             reason,
             tracked_before,
         )
+
+    def _should_skip_duplicate_emit(
+        self,
+        *,
+        session_id: str,
+        role: str,
+        content_type: str,
+        tool_use_id: str | None,
+        text: str,
+        line_end: int,
+    ) -> bool:
+        """Drop repeated Codex entries that mirror the same content nearby."""
+        text_hash = hashlib.sha1(text.encode("utf-8", errors="ignore")).hexdigest()
+        fingerprint = (role, content_type, tool_use_id or "", len(text), text_hash)
+        prev = self._last_emitted_fingerprint.get(session_id)
+        self._last_emitted_fingerprint[session_id] = (fingerprint, line_end)
+        if prev is None:
+            return False
+        prev_fp, prev_line_end = prev
+        if fingerprint != prev_fp:
+            return False
+        if line_end < prev_line_end:
+            return False
+        return (line_end - prev_line_end) <= _MAX_DUPLICATE_OFFSET_GAP_BYTES
 
     def set_message_callback(
         self, callback: Callable[[NewMessage], Awaitable[None]]
@@ -462,6 +499,10 @@ class SessionMonitor:
                         [raw],
                         pending_tools=carry,
                     )
+                    if parsed_entries:
+                        # Activity detected in transcript stream, even if some
+                        # parsed entries are dropped as duplicates.
+                        self._last_message_monotonic = time.monotonic()
 
                     for entry in parsed_entries:
                         if not entry.text and not entry.image_data:
@@ -470,6 +511,22 @@ class SessionMonitor:
                         if entry.role == "user" and not config.show_user_messages:
                             continue
                         text = self._truncate_emitted_text(entry.text)
+                        if self._should_skip_duplicate_emit(
+                            session_id=session_info.session_id,
+                            role=entry.role,
+                            content_type=entry.content_type,
+                            tool_use_id=entry.tool_use_id,
+                            text=text,
+                            line_end=line_end,
+                        ):
+                            logger.info(
+                                "LineTrace drop: trace=%s reason=duplicate_emit type=%s role=%s text_len=%d",
+                                trace_id,
+                                entry.content_type,
+                                entry.role,
+                                len(text),
+                            )
+                            continue
                         if text != entry.text:
                             logger.warning(
                                 "LineTrace clamp: trace=%s type=%s role=%s original_len=%d clamped_len=%d limit=%d",
@@ -651,17 +708,67 @@ class SessionMonitor:
         while self._running:
             try:
                 if config.provider == "codex":
-                    await codex_session_mapper.sync_session_map()
+                    now = time.monotonic()
+                    if (
+                        now - self._last_codex_mapper_sync
+                        >= _CODEX_MAPPER_SYNC_INTERVAL_SECONDS
+                    ):
+                        try:
+                            await asyncio.wait_for(
+                                codex_session_mapper.sync_session_map(),
+                                timeout=_CODEX_MAPPER_SYNC_TIMEOUT_SECONDS,
+                            )
+                        except asyncio.TimeoutError:
+                            logger.warning(
+                                "Codex mapper sync timeout after %.1fs; continuing",
+                                _CODEX_MAPPER_SYNC_TIMEOUT_SECONDS,
+                            )
+                        except Exception as e:
+                            logger.warning("Codex mapper sync failed: %s", e)
+                        self._last_codex_mapper_sync = now
 
                 # Load hook-based session map updates
-                await session_manager.load_session_map()
+                try:
+                    await asyncio.wait_for(
+                        session_manager.load_session_map(),
+                        timeout=_LOAD_SESSION_MAP_TIMEOUT_SECONDS,
+                    )
+                except asyncio.TimeoutError:
+                    logger.warning(
+                        "load_session_map timeout after %.1fs; skipping cycle",
+                        _LOAD_SESSION_MAP_TIMEOUT_SECONDS,
+                    )
+                    await asyncio.sleep(self.poll_interval)
+                    continue
 
                 # Detect session_map changes and cleanup replaced/removed sessions
-                current_map = await self._detect_and_cleanup_changes()
+                try:
+                    current_map = await asyncio.wait_for(
+                        self._detect_and_cleanup_changes(),
+                        timeout=_DETECT_CLEANUP_TIMEOUT_SECONDS,
+                    )
+                except asyncio.TimeoutError:
+                    logger.warning(
+                        "detect_and_cleanup timeout after %.1fs; skipping cycle",
+                        _DETECT_CLEANUP_TIMEOUT_SECONDS,
+                    )
+                    await asyncio.sleep(self.poll_interval)
+                    continue
                 active_session_ids = set(current_map.values())
 
                 # Check for new messages (all I/O is async)
-                new_messages = await self.check_for_updates(active_session_ids)
+                try:
+                    new_messages = await asyncio.wait_for(
+                        self.check_for_updates(active_session_ids),
+                        timeout=_CHECK_UPDATES_TIMEOUT_SECONDS,
+                    )
+                except asyncio.TimeoutError:
+                    logger.warning(
+                        "check_for_updates timeout after %.1fs; continuing",
+                        _CHECK_UPDATES_TIMEOUT_SECONDS,
+                    )
+                    await asyncio.sleep(self.poll_interval)
+                    continue
 
                 if new_messages:
                     self._last_message_monotonic = time.monotonic()
@@ -701,6 +808,7 @@ class SessionMonitor:
         self._running = True
         self._last_message_monotonic = time.monotonic()
         self._silence_recovery_done = False
+        self._last_codex_mapper_sync = 0.0
         self._task = asyncio.create_task(self._monitor_loop())
 
     async def stop(self) -> None:

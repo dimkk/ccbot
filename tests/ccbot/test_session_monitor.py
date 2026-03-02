@@ -8,6 +8,7 @@ import pytest
 from ccbot.monitor_state import TrackedSession
 from ccbot.session_monitor import (
     _MAX_EMITTED_TEXT_CHARS,
+    _MAX_DUPLICATE_OFFSET_GAP_BYTES,
     _MAX_INITIAL_BACKLOG_BYTES,
     SessionInfo,
     SessionMonitor,
@@ -180,6 +181,54 @@ class TestSessionMonitorOversizedProtection:
         assert messages == []
         assert tracked.last_byte_offset == jsonl_file.stat().st_size
         mock_read_new_lines.assert_not_called()
+
+    def test_duplicate_emit_guard_skips_nearby_identical_entries(self, monitor):
+        assert (
+            monitor._should_skip_duplicate_emit(
+                session_id="dup",
+                role="assistant",
+                content_type="text",
+                tool_use_id=None,
+                text="same message",
+                line_end=100,
+            )
+            is False
+        )
+        assert (
+            monitor._should_skip_duplicate_emit(
+                session_id="dup",
+                role="assistant",
+                content_type="text",
+                tool_use_id=None,
+                text="same message",
+                line_end=150,
+            )
+            is True
+        )
+
+    def test_duplicate_emit_guard_allows_far_apart_repeats(self, monitor):
+        assert (
+            monitor._should_skip_duplicate_emit(
+                session_id="dup2",
+                role="assistant",
+                content_type="text",
+                tool_use_id=None,
+                text="repeat later",
+                line_end=10,
+            )
+            is False
+        )
+        assert (
+            monitor._should_skip_duplicate_emit(
+                session_id="dup2",
+                role="assistant",
+                content_type="text",
+                tool_use_id=None,
+                text="repeat later",
+                line_end=10 + _MAX_DUPLICATE_OFFSET_GAP_BYTES + 1,
+            )
+            is False
+        )
 
     def test_reset_monitor_state_clears_offsets_and_writes_file(self, monitor, tmp_path):
         state_path = tmp_path / "monitor_state.json"
