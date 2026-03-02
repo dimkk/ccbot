@@ -201,19 +201,22 @@ class CodexSessionMapper:
             candidates = by_cwd.get(norm_cwd, [])
 
             chosen: CodexSessionMeta | None = None
+            existing_sid = existing.get("session_id", "")
+            has_existing_codex = existing_provider == "codex" and bool(existing_sid)
+            existing_meta: CodexSessionMeta | None = None
+            if existing_sid:
+                for meta in all_metas:
+                    if meta.session_id == existing_sid:
+                        existing_meta = meta
+                        break
+
             if (
                 preferred_meta is not None
                 and w.window_name == config.tmux_session_name
+                and not has_existing_codex
                 and preferred_meta.session_id not in assigned_session_ids
             ):
                 chosen = preferred_meta
-
-            existing_sid = existing.get("session_id", "")
-            if chosen is None and existing_sid:
-                for meta in all_metas:
-                    if meta.session_id == existing_sid:
-                        chosen = meta
-                        break
 
             if chosen is None:
                 for meta in candidates:
@@ -221,6 +224,14 @@ class CodexSessionMapper:
                         continue
                     chosen = meta
                     break
+
+            # If we couldn't resolve by cwd, keep previous mapping if still valid.
+            if (
+                chosen is None
+                and existing_meta is not None
+                and existing_meta.session_id not in assigned_session_ids
+            ):
+                chosen = existing_meta
 
             # Fallback: choose the newest unassigned rollout across all projects.
             # This handles "codex resume <id>" where pane cwd can differ from session cwd.
@@ -231,8 +242,9 @@ class CodexSessionMapper:
                     chosen = meta
                     break
 
-            # Keep previous mapping if file still exists and no better candidate.
-            if chosen is None and existing_provider == "codex" and existing_sid:
+            # Keep previous raw mapping only when we failed to parse its meta
+            # but file path still exists.
+            if chosen is None and has_existing_codex:
                 existing_fp = Path(existing.get("file_path", ""))
                 if existing_fp.exists():
                     next_entries[key] = existing
