@@ -39,6 +39,7 @@ _MAX_INITIAL_BACKLOG_BYTES = 256_000
 _MAX_READ_BYTES_PER_CYCLE = 256_000
 _NO_MESSAGES_RECOVERY_SECONDS = 10.0
 _MAX_DUPLICATE_OFFSET_GAP_BYTES = 8_192
+_HEARTBEAT_INTERVAL_SECONDS = 15.0
 _CODEX_MAPPER_SYNC_INTERVAL_SECONDS = 15.0
 _CODEX_MAPPER_SYNC_TIMEOUT_SECONDS = 5.0
 _LOAD_SESSION_MAP_TIMEOUT_SECONDS = 5.0
@@ -113,6 +114,7 @@ class SessionMonitor:
             str, tuple[tuple[str, str, str, int, str], int]
         ] = {}
         self._last_message_monotonic: float = time.monotonic()
+        self._last_heartbeat_monotonic: float = 0.0
         self._silence_recovery_done = False
         self._last_codex_mapper_sync: float = 0.0
 
@@ -165,6 +167,31 @@ class SessionMonitor:
         if line_end < prev_line_end:
             return False
         return (line_end - prev_line_end) <= _MAX_DUPLICATE_OFFSET_GAP_BYTES
+
+    def _maybe_log_heartbeat(self, active_session_ids: set[str]) -> None:
+        """Periodically emit monitor liveness/lag diagnostics."""
+        now = time.monotonic()
+        if (
+            self._last_heartbeat_monotonic > 0
+            and now - self._last_heartbeat_monotonic < _HEARTBEAT_INTERVAL_SECONDS
+        ):
+            return
+
+        self._last_heartbeat_monotonic = now
+        silence_seconds = now - self._last_message_monotonic
+        mapper_age = (
+            now - self._last_codex_mapper_sync
+            if self._last_codex_mapper_sync > 0
+            else -1.0
+        )
+        logger.info(
+            "Monitor heartbeat: active_sessions=%d tracked_sessions=%d pending_tools=%d silence=%.1fs mapper_sync_age=%.1fs",
+            len(active_session_ids),
+            len(self.state.tracked_sessions),
+            len(self._pending_tools),
+            silence_seconds,
+            mapper_age,
+        )
 
     def set_message_callback(
         self, callback: Callable[[NewMessage], Awaitable[None]]
@@ -755,6 +782,7 @@ class SessionMonitor:
                     await asyncio.sleep(self.poll_interval)
                     continue
                 active_session_ids = set(current_map.values())
+                self._maybe_log_heartbeat(active_session_ids)
 
                 # Check for new messages (all I/O is async)
                 try:
@@ -807,6 +835,7 @@ class SessionMonitor:
             return
         self._running = True
         self._last_message_monotonic = time.monotonic()
+        self._last_heartbeat_monotonic = 0.0
         self._silence_recovery_done = False
         self._last_codex_mapper_sync = 0.0
         self._task = asyncio.create_task(self._monitor_loop())

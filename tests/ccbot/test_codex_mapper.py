@@ -151,6 +151,71 @@ class TestCodexSessionMapper:
         assert data["ccbot:@3"]["session_id"] == resume_sid
 
     @pytest.mark.asyncio
+    async def test_overrides_existing_codex_mapping_with_resume_session_id(
+        self, tmp_path, monkeypatch
+    ):
+        sessions_root = tmp_path / "sessions"
+        map_file = tmp_path / "session_map.json"
+        ccbot_cwd = str((tmp_path / "ccbot").resolve())
+        old_sid = "019caeb3-36d0-7b51-881b-9c63ada7da20"
+        resume_sid = "019caadc-36a6-7b30-8e25-d8ce07fca21c"
+
+        old_path = (
+            sessions_root
+            / "2026/03/02"
+            / f"rollout-2026-03-02T16-18-26-{old_sid}.jsonl"
+        )
+        resume_path = (
+            sessions_root
+            / "2026/03/01"
+            / f"rollout-2026-03-01T22-24-44-{resume_sid}.jsonl"
+        )
+        _write_rollout(old_path, old_sid, ccbot_cwd, "2026-03-02T16:18:26Z")
+        _write_rollout(resume_path, resume_sid, ccbot_cwd, "2026-03-01T22:24:44Z")
+        os.utime(old_path, (1800000000, 1800000000))
+        os.utime(resume_path, (1700000000, 1700000000))
+
+        map_file.write_text(
+            json.dumps(
+                {
+                    "ccbot:@2": {
+                        "session_id": old_sid,
+                        "cwd": ccbot_cwd,
+                        "window_name": "ccbot",
+                        "provider": "codex",
+                        "file_path": str(old_path),
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        mapper = CodexSessionMapper(
+            sessions_root=sessions_root, session_map_file=map_file
+        )
+        windows = [
+            TmuxWindow(
+                window_id="@2",
+                window_name="ccbot",
+                cwd=ccbot_cwd,
+                pane_current_command="node",
+            )
+        ]
+
+        monkeypatch.setattr(
+            "ccbot.codex_mapper.config.codex_resume_session_id", resume_sid
+        )
+        monkeypatch.setattr("ccbot.codex_mapper.config.tmux_session_name", "ccbot")
+
+        with patch("ccbot.codex_mapper.tmux_manager") as mock_tmux:
+            mock_tmux.list_windows = AsyncMock(return_value=windows)
+            changed = await mapper.sync_session_map()
+
+        assert changed is True
+        data = json.loads(map_file.read_text())
+        assert data["ccbot:@2"]["session_id"] == resume_sid
+
+    @pytest.mark.asyncio
     async def test_switches_existing_mapping_to_newer_same_cwd_session(
         self, tmp_path, monkeypatch
     ):

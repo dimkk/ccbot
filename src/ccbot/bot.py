@@ -66,6 +66,7 @@ from .handlers.callback_data import (
     CB_ASK_LEFT,
     CB_ASK_REFRESH,
     CB_ASK_RIGHT,
+    CB_ASK_SELECT,
     CB_ASK_SPACE,
     CB_ASK_TAB,
     CB_ASK_UP,
@@ -108,6 +109,7 @@ from .handlers.interactive_ui import (
     INTERACTIVE_TOOL_NAMES,
     clear_interactive_mode,
     clear_interactive_msg,
+    get_interactive_choice_state,
     get_interactive_msg_id,
     get_interactive_window,
     handle_interactive_ui,
@@ -1750,6 +1752,54 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
             await handle_interactive_ui(context.bot, user.id, window_id, thread_id)
         await query.answer()
 
+    # Interactive UI: Numeric quick-select (1..N)
+    elif data.startswith(CB_ASK_SELECT):
+        payload = data[len(CB_ASK_SELECT) :]
+        parts = payload.split(":", 1)
+        if len(parts) != 2:
+            await query.answer("Invalid selection", show_alert=True)
+            return
+        index_raw, window_id = parts
+        try:
+            target_index = int(index_raw)
+        except ValueError:
+            await query.answer("Invalid selection", show_alert=True)
+            return
+
+        thread_id = _get_thread_id(update)
+        choice_state = get_interactive_choice_state(user.id, thread_id)
+        if choice_state is None:
+            # State can be stale after restart — refresh once from terminal.
+            await handle_interactive_ui(context.bot, user.id, window_id, thread_id)
+            choice_state = get_interactive_choice_state(user.id, thread_id)
+        if choice_state is None:
+            await query.answer("No selectable options", show_alert=True)
+            return
+
+        selected_index, total_options = choice_state
+        if target_index < 1 or target_index > total_options:
+            await query.answer("Option out of range", show_alert=True)
+            return
+
+        w = await tmux_manager.find_window_by_id(window_id)
+        if not w:
+            await query.answer("Window no longer exists", show_alert=True)
+            return
+
+        delta = target_index - selected_index
+        if delta != 0:
+            nav_key = "Down" if delta > 0 else "Up"
+            for _ in range(abs(delta)):
+                await tmux_manager.send_keys(
+                    w.window_id, nav_key, enter=False, literal=False
+                )
+                await asyncio.sleep(0.05)
+
+        await tmux_manager.send_keys(w.window_id, "Enter", enter=False, literal=False)
+        await asyncio.sleep(0.35)
+        await handle_interactive_ui(context.bot, user.id, window_id, thread_id)
+        await query.answer(f"Selected {target_index}")
+
     # Interactive UI: Down arrow
     elif data.startswith(CB_ASK_DOWN):
         window_id = data[len(CB_ASK_DOWN) :]
@@ -1951,9 +2001,19 @@ async def handle_new_message(msg: NewMessage, bot: Bot) -> None:
                 # UI not rendered — clear the early-set mode
                 clear_interactive_mode(user_id, thread_id)
 
-        # Any non-interactive message means the interaction is complete — delete the UI message
+        # Non-interactive events can still arrive while an approval UI is visible.
+        # Only clear the interactive message when the UI is actually gone.
         if get_interactive_msg_id(user_id, thread_id):
-            await clear_interactive_msg(user_id, bot, thread_id)
+            should_clear_interactive = False
+            w = await tmux_manager.find_window_by_id(wid)
+            if not w:
+                should_clear_interactive = True
+            else:
+                pane_text = await tmux_manager.capture_pane(w.window_id)
+                if pane_text:
+                    should_clear_interactive = not is_interactive_ui(pane_text)
+            if should_clear_interactive:
+                await clear_interactive_msg(user_id, bot, thread_id)
 
         parts = build_response_parts(
             msg.text,

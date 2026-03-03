@@ -97,7 +97,8 @@ class Config:
         # Provider capabilities and UI labels
         self.agent_name = "Codex CLI" if self.provider == "codex" else "Claude Code"
         self.supports_usage_command = self.provider == "claude"
-        self.supports_claude_interactive_ui = self.provider == "claude"
+        # Interactive terminal prompts (approval/select) are used by both providers.
+        self.supports_claude_interactive_ui = self.provider in ("claude", "codex")
         # Forward unknown slash commands for both providers by default:
         # e.g. /status, /permissions, /clear, /compact.
         slash_default = "true"

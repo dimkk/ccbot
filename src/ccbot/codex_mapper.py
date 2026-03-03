@@ -213,9 +213,10 @@ class CodexSessionMapper:
             if (
                 preferred_meta is not None
                 and w.window_name == config.tmux_session_name
-                and not has_existing_codex
                 and preferred_meta.session_id not in assigned_session_ids
             ):
+                # Explicit resume target should win over stale/existing mapping
+                # for the main ccbot window.
                 chosen = preferred_meta
 
             if chosen is None:

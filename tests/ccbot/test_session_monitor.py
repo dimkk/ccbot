@@ -1,12 +1,14 @@
 """Unit tests for SessionMonitor JSONL reading and offset handling."""
 
 import json
+import logging
 from unittest.mock import AsyncMock
 
 import pytest
 
 from ccbot.monitor_state import TrackedSession
 from ccbot.session_monitor import (
+    _HEARTBEAT_INTERVAL_SECONDS,
     _MAX_EMITTED_TEXT_CHARS,
     _MAX_DUPLICATE_OFFSET_GAP_BYTES,
     _MAX_INITIAL_BACKLOG_BYTES,
@@ -252,3 +254,32 @@ class TestSessionMonitorOversizedProtection:
         assert state_path.exists()
         payload = json.loads(state_path.read_text(encoding="utf-8"))
         assert payload.get("tracked_sessions") == {}
+
+    def test_monitor_heartbeat_logs_and_throttles(self, monitor, caplog, monkeypatch):
+        monitor.state.tracked_sessions["s1"] = TrackedSession(
+            session_id="s1",
+            file_path="/tmp/s1.jsonl",
+            last_byte_offset=10,
+        )
+        monitor._pending_tools["s1"] = {"tool": "x"}
+        monitor._last_message_monotonic = 100.0
+        monitor._last_codex_mapper_sync = 90.0
+
+        ticks = iter(
+            [
+                120.0,  # first call -> heartbeat
+                120.0 + (_HEARTBEAT_INTERVAL_SECONDS - 1.0),  # throttled
+                120.0 + (_HEARTBEAT_INTERVAL_SECONDS + 1.0),  # heartbeat again
+            ]
+        )
+        monkeypatch.setattr("ccbot.session_monitor.time.monotonic", lambda: next(ticks))
+
+        with caplog.at_level(logging.INFO):
+            monitor._maybe_log_heartbeat({"s1"})
+            monitor._maybe_log_heartbeat({"s1"})
+            monitor._maybe_log_heartbeat({"s1"})
+
+        heartbeats = [
+            rec.message for rec in caplog.records if rec.message.startswith("Monitor heartbeat:")
+        ]
+        assert len(heartbeats) == 2
