@@ -216,7 +216,7 @@ class TestCodexSessionMapper:
         assert data["ccbot:@2"]["session_id"] == resume_sid
 
     @pytest.mark.asyncio
-    async def test_switches_existing_mapping_to_newer_same_cwd_session(
+    async def test_keeps_existing_mapping_even_if_newer_same_cwd_session_exists(
         self, tmp_path, monkeypatch
     ):
         sessions_root = tmp_path / "sessions"
@@ -267,6 +267,54 @@ class TestCodexSessionMapper:
             mock_tmux.list_windows = AsyncMock(return_value=windows)
             changed = await mapper.sync_session_map()
 
+        assert changed is False
+        data = json.loads(map_file.read_text())
+        assert data["ccbot:@1"]["session_id"] == sid_old
+
+    @pytest.mark.asyncio
+    async def test_drops_existing_codex_mapping_when_window_is_shell(
+        self, tmp_path, monkeypatch
+    ):
+        sessions_root = tmp_path / "sessions"
+        map_file = tmp_path / "session_map.json"
+        proj_cwd = str((tmp_path / "proj").resolve())
+        sid = "sid-shell"
+        rollout = sessions_root / "2026/03/01" / f"rollout-2026-03-01T12-00-00-{sid}.jsonl"
+        _write_rollout(rollout, sid, proj_cwd, "2026-03-01T12:00:00Z")
+
+        map_file.write_text(
+            json.dumps(
+                {
+                    "ccbot:@1": {
+                        "session_id": sid,
+                        "cwd": proj_cwd,
+                        "window_name": "proj",
+                        "provider": "codex",
+                        "file_path": str(rollout),
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        mapper = CodexSessionMapper(
+            sessions_root=sessions_root, session_map_file=map_file
+        )
+        windows = [
+            TmuxWindow(
+                window_id="@1",
+                window_name="proj",
+                cwd=proj_cwd,
+                pane_current_command="bash",
+            )
+        ]
+
+        monkeypatch.setattr("ccbot.codex_mapper.config.tmux_session_name", "ccbot")
+
+        with patch("ccbot.codex_mapper.tmux_manager") as mock_tmux:
+            mock_tmux.list_windows = AsyncMock(return_value=windows)
+            changed = await mapper.sync_session_map()
+
         assert changed is True
         data = json.loads(map_file.read_text())
-        assert data["ccbot:@1"]["session_id"] == sid_new
+        assert "ccbot:@1" not in data

@@ -185,10 +185,12 @@ class CodexSessionMapper:
                 existing = {}
             existing_provider = existing.get("provider", "claude")
 
-            # Map windows that appear active, or were mapped as codex before.
-            # Codex often appears as "node" in tmux pane_current_command.
+            # Map only windows with an active non-shell process.
+            # Codex often appears as "node" in pane_current_command.
+            # If a window falls back to shell, treat it as inactive so
+            # stale codex mappings do not keep streaming unrelated output.
             pane_cmd = (w.pane_current_command or "").lower()
-            if existing_provider != "codex" and pane_cmd in (
+            if pane_cmd in (
                 "",
                 "bash",
                 "sh",
@@ -219,20 +221,20 @@ class CodexSessionMapper:
                 # for the main ccbot window.
                 chosen = preferred_meta
 
-            if chosen is None:
-                for meta in candidates:
-                    if meta.session_id in assigned_session_ids:
-                        continue
-                    chosen = meta
-                    break
-
-            # If we couldn't resolve by cwd, keep previous mapping if still valid.
+            # Keep previous mapping stable if it's still valid.
             if (
                 chosen is None
                 and existing_meta is not None
                 and existing_meta.session_id not in assigned_session_ids
             ):
                 chosen = existing_meta
+
+            if chosen is None:
+                for meta in candidates:
+                    if meta.session_id in assigned_session_ids:
+                        continue
+                    chosen = meta
+                    break
 
             # Fallback: choose the newest unassigned rollout across all projects.
             # This handles "codex resume <id>" where pane cwd can differ from session cwd.

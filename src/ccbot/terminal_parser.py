@@ -84,8 +84,14 @@ UI_PATTERNS: list[UIPattern] = [
     UIPattern(
         # Permission menu with numbered choices (no "Esc to cancel" line)
         name="PermissionPrompt",
-        top=(re.compile(r"^\s*[❯›>]\s*1\.\s*Yes\b", re.IGNORECASE),),
-        bottom=(),
+        top=(re.compile(r"^\s*[❯›>]\s*1\.\s+\S"),),
+        bottom=(
+            re.compile(
+                r"^\s*Press enter to confirm or esc to cancel\s*$",
+                re.IGNORECASE,
+            ),
+            re.compile(r"^\s*Press enter to continue\s*$", re.IGNORECASE),
+        ),
         min_gap=2,
     ),
     UIPattern(
@@ -131,6 +137,8 @@ UI_PATTERNS: list[UIPattern] = [
 # ── Post-processing ──────────────────────────────────────────────────────
 
 _RE_LONG_DASH = re.compile(r"^─{5,}$")
+_MAX_UI_CAPTURE_LINES = 120
+_MAX_TRAILING_NONEMPTY_AFTER_UI = 1
 
 
 def _shorten_separators(text: str) -> str:
@@ -150,32 +158,49 @@ def _try_extract(lines: list[str], pattern: UIPattern) -> InteractiveUIContent |
     to the last non-empty line (used for multi-tab AskUserQuestion where the
     bottom delimiter varies by tab).
     """
-    top_idx: int | None = None
-    bottom_idx: int | None = None
+    top_candidates = [
+        i for i, line in enumerate(lines) if any(p.search(line) for p in pattern.top)
+    ]
+    if not top_candidates:
+        return None
 
-    for i, line in enumerate(lines):
-        if top_idx is None:
-            if any(p.search(line) for p in pattern.top):
-                top_idx = i
-        elif pattern.bottom and any(p.search(line) for p in pattern.bottom):
-            bottom_idx = i
+    last_non_empty = -1
+    for i in range(len(lines) - 1, -1, -1):
+        if lines[i].strip():
+            last_non_empty = i
             break
-
-    if top_idx is None:
+    if last_non_empty < 0:
         return None
 
-    # No bottom patterns → use last non-empty line as boundary
-    if not pattern.bottom:
-        for i in range(len(lines) - 1, top_idx, -1):
-            if lines[i].strip():
-                bottom_idx = i
-                break
+    # Prefer the most recent UI block in the pane to avoid stale detections
+    # from older scrollback content.
+    for top_idx in reversed(top_candidates):
+        bottom_idx: int | None = None
 
-    if bottom_idx is None or bottom_idx - top_idx < pattern.min_gap:
-        return None
+        if pattern.bottom:
+            for i in range(top_idx + 1, len(lines)):
+                if any(p.search(lines[i]) for p in pattern.bottom):
+                    bottom_idx = i
+                    break
+        else:
+            # No bottom patterns -> use last non-empty line as boundary.
+            bottom_idx = last_non_empty
 
-    content = "\n".join(lines[top_idx : bottom_idx + 1]).rstrip()
-    return InteractiveUIContent(content=_shorten_separators(content), name=pattern.name)
+        if bottom_idx is None or bottom_idx - top_idx < pattern.min_gap:
+            continue
+
+        # Ignore stale UI blocks that have significant non-empty content after
+        # the detected bottom marker (e.g. shell prompt already returned).
+        trailing_non_empty = sum(1 for line in lines[bottom_idx + 1 :] if line.strip())
+        if trailing_non_empty > _MAX_TRAILING_NONEMPTY_AFTER_UI:
+            continue
+
+        content = "\n".join(lines[top_idx : bottom_idx + 1]).rstrip()
+        return InteractiveUIContent(
+            content=_shorten_separators(content), name=pattern.name
+        )
+
+    return None
 
 
 # ── Public API ───────────────────────────────────────────────────────────
@@ -191,6 +216,8 @@ def extract_interactive_content(pane_text: str) -> InteractiveUIContent | None:
         return None
 
     lines = pane_text.strip().split("\n")
+    if len(lines) > _MAX_UI_CAPTURE_LINES:
+        lines = lines[-_MAX_UI_CAPTURE_LINES:]
     for pattern in UI_PATTERNS:
         result = _try_extract(lines, pattern)
         if result:

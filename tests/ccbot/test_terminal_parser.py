@@ -110,6 +110,39 @@ class TestExtractInteractiveContent:
         assert "1. Yes, proceed" in result.content
         assert "Press enter to confirm or esc to cancel" in result.content
 
+    def test_ignores_stale_numbered_prompt_above_shell_prompt(self):
+        pane = (
+            " › 1. Yes, proceed (y)\n"
+            "   2. Yes, and don't ask again (p)\n"
+            "   3. No, and tell Codex what to do differently (esc)\n"
+            "  Press enter to confirm or esc to cancel\n"
+            "dimkk@host:~/repo$ echo ok\n"
+            "ok\n"
+            "dimkk@host:~/repo$ \n"
+        )
+        assert extract_interactive_content(pane) is None
+
+    def test_prefers_most_recent_interactive_block(self):
+        pane = (
+            "  Would you like to run the following command?\n"
+            "  Reason: old\n"
+            " › 1. Yes, proceed (y)\n"
+            "   2. Yes, and don't ask again (p)\n"
+            "   3. No, and tell Codex what to do differently (esc)\n"
+            "  Press enter to confirm or esc to cancel\n"
+            "dimkk@host:~/repo$ codex resume abc\n"
+            "\n"
+            "  ✨ Update available! 0.104.0 -> 0.107.0\n"
+            " › 1. Update now (runs `npm install -g @openai/codex`)\n"
+            "   2. Skip\n"
+            "   3. Skip until next version\n"
+            "  Press enter to continue\n"
+        )
+        result = extract_interactive_content(pane)
+        assert result is not None
+        assert "Update now" in result.content
+        assert "Reason: old" not in result.content
+
     def test_restore_checkpoint(self):
         pane = (
             "  Restore the code to a previous state?\n"
