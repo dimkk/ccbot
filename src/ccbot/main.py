@@ -11,7 +11,10 @@ import asyncio
 import argparse
 import logging
 import os
+import signal
+import subprocess
 import sys
+import time
 
 
 def _parse_forward_ports(args: list[str]) -> list[int]:
@@ -42,6 +45,143 @@ def _parse_forward_ports(args: list[str]) -> list[int]:
                 raise SystemExit(f"Invalid --forward port: {port}")
             ports.append(port)
     return ports
+
+
+def _looks_like_ccbot_process(cmdline: str) -> bool:
+    """Return True when a process cmdline appears to be a ccbot runner."""
+    text = cmdline.strip()
+    if not text:
+        return False
+    parts = text.split()
+    if not parts:
+        return False
+
+    # Direct launcher script (venv/local/bin/ccbot or plain ccbot)
+    if parts[0] == "ccbot" or parts[0].endswith("/ccbot"):
+        return True
+    if any(token.endswith("/bin/ccbot") for token in parts):
+        return True
+
+    # uv run ccbot
+    for i in range(len(parts) - 2):
+        if parts[i] == "uv" and parts[i + 1] == "run" and parts[i + 2] == "ccbot":
+            return True
+
+    # python -m ccbot style
+    for i in range(len(parts) - 2):
+        if (
+            parts[i].startswith("python")
+            and parts[i + 1] == "-m"
+            and parts[i + 2] == "ccbot"
+        ):
+            return True
+
+    return False
+
+
+def _read_ppid(pid: int) -> int:
+    """Read parent pid from /proc/<pid>/stat; returns 0 on failure."""
+    try:
+        with open(f"/proc/{pid}/stat", "r", encoding="utf-8") as f:
+            fields = f.read().split()
+        if len(fields) >= 4:
+            return int(fields[3])
+    except (OSError, ValueError):
+        pass
+    return 0
+
+
+def _protected_pid_set() -> set[int]:
+    """Current pid and all ancestors (must never be terminated)."""
+    protected: set[int] = set()
+    pid = os.getpid()
+    while pid > 1 and pid not in protected:
+        protected.add(pid)
+        pid = _read_ppid(pid)
+    if pid == 1:
+        protected.add(1)
+    return protected
+
+
+def _list_process_table() -> list[tuple[int, str]]:
+    """Return [(pid, cmdline)] from `ps` output."""
+    try:
+        out = subprocess.run(
+            ["ps", "-eo", "pid=,args="],
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout
+    except (subprocess.CalledProcessError, OSError):
+        return []
+
+    rows: list[tuple[int, str]] = []
+    for line in out.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        parts = stripped.split(None, 1)
+        if not parts:
+            continue
+        try:
+            pid = int(parts[0])
+        except ValueError:
+            continue
+        cmdline = parts[1] if len(parts) > 1 else ""
+        rows.append((pid, cmdline))
+    return rows
+
+
+def _terminate_other_ccbot_instances(logger: logging.Logger) -> None:
+    """Terminate older ccbot instances to avoid Telegram getUpdates conflicts."""
+    protected = _protected_pid_set()
+    targets: list[int] = []
+    for pid, cmdline in _list_process_table():
+        if pid in protected:
+            continue
+        if _looks_like_ccbot_process(cmdline):
+            targets.append(pid)
+
+    if not targets:
+        return
+
+    # First try graceful stop.
+    for pid in targets:
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except ProcessLookupError:
+            continue
+        except PermissionError:
+            logger.warning("No permission to terminate stale ccbot pid=%d", pid)
+        except OSError as e:
+            logger.warning("Failed to terminate stale ccbot pid=%d: %s", pid, e)
+
+    deadline = time.time() + 2.0
+    remaining = set(targets)
+    while remaining and time.time() < deadline:
+        alive: set[int] = set()
+        for pid in remaining:
+            if os.path.exists(f"/proc/{pid}"):
+                alive.add(pid)
+        remaining = alive
+        if remaining:
+            time.sleep(0.1)
+
+    # Force kill anything that ignored SIGTERM.
+    for pid in list(remaining):
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except ProcessLookupError:
+            continue
+        except PermissionError:
+            logger.warning(
+                "No permission to force-kill stale ccbot pid=%d",
+                pid,
+            )
+        except OSError as e:
+            logger.warning("Failed to force-kill stale ccbot pid=%d: %s", pid, e)
+
+    logger.info("Terminated stale ccbot instances: %s", ", ".join(map(str, targets)))
 
 
 def main() -> None:
@@ -89,6 +229,8 @@ def main() -> None:
     # AIORateLimiter (max_retries=5) handles retries itself; keep INFO for visibility
     logging.getLogger("telegram.ext.AIORateLimiter").setLevel(logging.INFO)
     logger = logging.getLogger(__name__)
+
+    _terminate_other_ccbot_instances(logger)
 
     from .tmux_manager import tmux_manager
 
