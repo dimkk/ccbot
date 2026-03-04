@@ -78,6 +78,12 @@ uv sync
 3. Select your bot, then go to **Settings** > **Bot Settings**
 4. Enable **Threaded Mode**
 
+**How to get your Telegram user ID (for `ALLOWED_USERS`):**
+
+1. Open [@userinfobot](https://t.me/userinfobot) (or [@getmyid_bot](https://t.me/getmyid_bot))
+2. Send `/start`
+3. Copy your numeric `id` and put it into `ALLOWED_USERS`
+
 **2. Configure environment variables:**
 
 Create `~/.ccbot/.env`:
@@ -159,6 +165,10 @@ ccbot
 # If installed from source
 uv run ccbot
 ```
+
+Startup behavior: when a new `ccbot` instance starts, it automatically
+terminates other running `ccbot` instances on the same host. This prevents
+Telegram polling conflicts (`Conflict: terminated by other getUpdates request`).
 
 ### Provider Switching
 
