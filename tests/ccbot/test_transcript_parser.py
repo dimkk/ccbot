@@ -85,6 +85,7 @@ class TestFormatToolUseSummary:
             ),
             ("ExitPlanMode", {}, "**ExitPlanMode**"),
             ("Skill", {"skill": "code-review"}, "**Skill**(code-review)"),
+            ("wait", {"seconds": 120}, "**wait**(120s)"),
             (
                 "CustomTool",
                 {"first_key": "value1"},
@@ -105,6 +106,7 @@ class TestFormatToolUseSummary:
             "AskUserQuestion",
             "ExitPlanMode",
             "Skill",
+            "wait",
             "unknown_tool",
         ],
     )

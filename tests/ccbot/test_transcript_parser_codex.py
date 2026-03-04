@@ -73,6 +73,38 @@ class TestCodexParseEntries:
         assert "exec_command" in tool_use[0].text
         assert "On branch main" in tool_result[0].text
 
+    def test_wait_tool_is_sent_as_separate_messages(self):
+        entries = [
+            {
+                "type": "response_item",
+                "payload": {
+                    "type": "function_call",
+                    "name": "wait",
+                    "arguments": '{"seconds":120}',
+                    "call_id": "wait-1",
+                },
+            },
+            {
+                "type": "response_item",
+                "payload": {
+                    "type": "function_call_output",
+                    "call_id": "wait-1",
+                    "output": '{"status":{},"timed_out":true}',
+                },
+            },
+        ]
+        result, pending = TranscriptParser.parse_entries(entries)
+        assert pending == {}
+        tool_use = [e for e in result if e.content_type == "tool_use"]
+        tool_result = [e for e in result if e.content_type == "tool_result"]
+        assert len(tool_use) == 1
+        assert len(tool_result) == 1
+        # No tool_use_id => message_queue sends tool_result as new message
+        # instead of editing the original tool_use message.
+        assert tool_use[0].tool_use_id is None
+        assert tool_result[0].tool_use_id is None
+        assert "**wait**(120s)" in tool_use[0].text
+
     def test_parses_event_user_message(self):
         entries = [
             {

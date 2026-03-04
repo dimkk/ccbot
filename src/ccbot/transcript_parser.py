@@ -77,6 +77,11 @@ class TranscriptParser:
     _MAX_SUMMARY_LENGTH = 200
 
     @staticmethod
+    def _is_non_editable_tool(tool_name: str | None) -> bool:
+        """Tools whose result should be sent as a new message, not an edit."""
+        return (tool_name or "").strip().lower() in {"wait"}
+
+    @staticmethod
     def parse_line(line: str) -> dict | None:
         """Parse a single JSONL line.
 
@@ -265,6 +270,15 @@ class TranscriptParser:
             summary = ""
         elif name == "Skill":
             summary = input_data.get("skill", "")
+        elif name.lower() == "wait":
+            # Codex wait tool often has seconds in args; show it explicitly.
+            seconds = input_data.get("seconds")
+            if isinstance(seconds, (int, float)):
+                summary = f"{int(seconds)}s"
+            else:
+                duration_ms = input_data.get("duration_ms")
+                if isinstance(duration_ms, (int, float)) and duration_ms > 0:
+                    summary = f"{duration_ms / 1000:.1f}s"
         else:
             # Generic: show first string value
             for v in input_data.values():
@@ -648,6 +662,7 @@ class TranscriptParser:
                         args_data = args_raw
 
                     summary = cls.format_tool_use_summary(name, args_data)
+                    non_editable = cls._is_non_editable_tool(name)
                     if call_id:
                         pending_tools[call_id] = PendingToolInfo(
                             summary=summary,
@@ -661,7 +676,7 @@ class TranscriptParser:
                             role="assistant",
                             text=summary,
                             content_type="tool_use",
-                            tool_use_id=call_id or None,
+                            tool_use_id=None if non_editable else (call_id or None),
                             timestamp=entry_timestamp,
                             tool_name=name,
                         )
@@ -684,7 +699,11 @@ class TranscriptParser:
                             role="assistant",
                             text=entry_text,
                             content_type="tool_result",
-                            tool_use_id=call_id or None,
+                            tool_use_id=(
+                                None
+                                if cls._is_non_editable_tool(tool_name)
+                                else (call_id or None)
+                            ),
                             timestamp=entry_timestamp,
                         )
                     )
@@ -890,7 +909,11 @@ class TranscriptParser:
                                     role="assistant",
                                     text=summary,
                                     content_type="tool_use",
-                                    tool_use_id=tool_id,
+                                    tool_use_id=(
+                                        None
+                                        if cls._is_non_editable_tool(name)
+                                        else tool_id
+                                    ),
                                     timestamp=entry_timestamp,
                                     tool_name=name,
                                 )
@@ -959,6 +982,8 @@ class TranscriptParser:
                             tool_summary = tool_info.summary
                             tool_name = tool_info.tool_name
                             tool_input_data = tool_info.input_data
+                        if cls._is_non_editable_tool(tool_name):
+                            _tuid = None
 
                         if is_interrupted:
                             # Show interruption inline with tool summary
