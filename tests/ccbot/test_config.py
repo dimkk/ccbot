@@ -67,6 +67,22 @@ class TestConfigValid:
         )
         cfg = Config()
         assert cfg.codex_resume_session_id == "019c9eef-c5f7-7dc2-9e92-de59a1c3cd28"
+        assert "resume 019c9eef-c5f7-7dc2-9e92-de59a1c3cd28" in cfg.agent_command
+        assert "-a never" in cfg.agent_command
+        assert "--sandbox workspace-write" in cfg.agent_command
+        assert "-C " in cfg.agent_command
+
+    def test_codex_resume_keeps_explicit_options(self, monkeypatch):
+        monkeypatch.setenv("CCBOT_PROVIDER", "codex")
+        monkeypatch.setenv(
+            "CCBOT_AGENT_COMMAND",
+            "codex -C /tmp/abc -a on-request --sandbox danger-full-access resume 019c9eef-c5f7-7dc2-9e92-de59a1c3cd28",
+        )
+        cfg = Config()
+        assert cfg.agent_command == (
+            "codex -C /tmp/abc -a on-request --sandbox danger-full-access "
+            "resume 019c9eef-c5f7-7dc2-9e92-de59a1c3cd28"
+        )
 
     def test_forward_ports(self, monkeypatch):
         monkeypatch.setenv("CCBOT_FORWARD_PORTS", "3000, 5173")

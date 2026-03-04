@@ -297,6 +297,10 @@ CCBOT_AGENT_COMMAND='codex resume <session-id>' \
 uv run ccbot
 ```
 
+When `CCBOT_AGENT_COMMAND` is exactly a Codex resume command, CCBot auto-adds
+missing non-interactive defaults (`-C <cwd> -a never --sandbox workspace-write`)
+for you. You only need the session ID.
+
 Example:
 
 ```bash

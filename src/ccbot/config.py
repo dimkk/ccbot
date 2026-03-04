@@ -11,6 +11,7 @@ Key class: Config (singleton instantiated as `config`).
 import logging
 import os
 import re
+import shlex
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -32,6 +33,78 @@ def _extract_codex_resume_session_id(command: str) -> str:
     if match:
         return match.group(1)
     return ""
+
+
+def _normalize_codex_resume_command(command: str, cwd: Path) -> str:
+    """Ensure minimal `codex resume <sid>` gets stable non-interactive defaults.
+
+    When resuming by explicit session id, Codex may ask interactive questions
+    about cwd/approvals. For CCBot this creates noisy Telegram interactive
+    prompts. Inject defaults only when missing:
+      - `-C <cwd>`
+      - `-a never`
+      - `--sandbox workspace-write`
+    """
+    if not command:
+        return command
+
+    sid = _extract_codex_resume_session_id(command)
+    if not sid:
+        return command
+
+    try:
+        parts = shlex.split(command)
+    except ValueError:
+        # Keep original command if shell syntax is malformed.
+        return command
+
+    codex_idx = -1
+    for i, token in enumerate(parts):
+        base = os.path.basename(token)
+        if base == "codex" or base == "codex.exe":
+            codex_idx = i
+            break
+    if codex_idx < 0:
+        return command
+
+    has_cd = False
+    has_approval = False
+    has_sandbox = False
+    for i, token in enumerate(parts):
+        if token in ("-C", "--cd") or token.startswith("--cd="):
+            has_cd = True
+        if (
+            token in ("-a", "--ask-for-approval")
+            or token.startswith("--ask-for-approval=")
+        ):
+            has_approval = True
+        if (
+            token in ("-s", "--sandbox")
+            or token.startswith("--sandbox=")
+            or token in ("--full-auto", "--dangerously-bypass-approvals-and-sandbox")
+        ):
+            has_sandbox = True
+        # Handle short options with separate value.
+        if token == "-C" and i + 1 < len(parts):
+            has_cd = True
+        if token == "-a" and i + 1 < len(parts):
+            has_approval = True
+        if token == "-s" and i + 1 < len(parts):
+            has_sandbox = True
+
+    insert_tokens: list[str] = []
+    if not has_cd:
+        insert_tokens.extend(["-C", str(cwd.resolve())])
+    if not has_approval:
+        insert_tokens.extend(["-a", "never"])
+    if not has_sandbox:
+        insert_tokens.extend(["--sandbox", "workspace-write"])
+
+    if not insert_tokens:
+        return command
+
+    normalized = parts[: codex_idx + 1] + insert_tokens + parts[codex_idx + 1 :]
+    return shlex.join(normalized)
 
 
 class Config:
@@ -86,6 +159,14 @@ class Config:
         self.agent_command = os.getenv("CCBOT_AGENT_COMMAND") or os.getenv(
             "CLAUDE_COMMAND", default_cmd
         )
+        if self.provider == "codex":
+            normalized = _normalize_codex_resume_command(self.agent_command, Path.cwd())
+            if normalized != self.agent_command:
+                logger.info(
+                    "Normalized codex resume command for non-interactive mode: %s",
+                    normalized,
+                )
+            self.agent_command = normalized
         self.codex_resume_session_id = (
             _extract_codex_resume_session_id(self.agent_command)
             if self.provider == "codex"
