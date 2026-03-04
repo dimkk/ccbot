@@ -7,19 +7,24 @@ Control AI coding sessions remotely via Telegram — monitor, interact, and mana
 
 https://github.com/user-attachments/assets/15ffb38e-5eb9-4720-93b9-412e4961dc93
 
+## Fork Notice
+
+This repository is maintained as an **independent fork** at `dimkk/ccbot`.
+If upstream PRs are not accepted, use this fork directly for installation and updates.
+
 ## Why CCBot?
 
-Claude Code runs in your terminal. When you step away from your computer — commuting, on the couch, or just away from your desk — the session keeps working, but you lose visibility and control.
+Codex CLI or Claude Code runs in your terminal. When you step away from your computer — commuting, on the couch, or just away from your desk — the session keeps working, but you lose visibility and control.
 
-CCBot solves this by letting you **seamlessly continue the same session from Telegram**. The key insight is that it operates on **tmux**, not the Claude Code SDK. Your Claude Code process stays exactly where it is, in a tmux window on your machine. CCBot simply reads its output and sends keystrokes to it. This means:
+CCBot solves this by letting you **seamlessly continue the same session from Telegram**. The key insight is that it operates on **tmux**, not any CLI SDK wrapper. Your Codex or Claude process stays exactly where it is, in a tmux window on your machine. CCBot simply reads its output and sends keystrokes to it. This means:
 
-- **Switch from desktop to phone mid-conversation** — Claude is working on a refactor? Walk away, keep monitoring and responding from Telegram.
+- **Switch from desktop to phone mid-conversation** — Codex or Claude is working on a refactor? Walk away, keep monitoring and responding from Telegram.
 - **Switch back to desktop anytime** — Since the tmux session was never interrupted, just `tmux attach` and you're back in the terminal with full scrollback and context.
 - **Run multiple sessions in parallel** — Each Telegram topic maps to a separate tmux window, so you can juggle multiple projects from one chat group.
 
-Other Telegram bots for Claude Code typically wrap the Claude Code SDK to create separate API sessions. Those sessions are isolated — you can't resume them in your terminal. CCBot takes a different approach: it's just a thin control layer over tmux, so the terminal remains the source of truth and you never lose the ability to switch back.
+Other Telegram bots for Codex or Claude typically wrap SDK/API sessions. Those sessions are isolated — you can't resume them in your terminal. CCBot takes a different approach: it's just a thin control layer over tmux, so the terminal remains the source of truth and you never lose the ability to switch back.
 
-In fact, CCBot itself was built this way — iterating on itself through Claude Code sessions monitored and driven from Telegram via CCBot.
+In fact, CCBot itself was built this way — iterating on itself through Codex or Claude sessions monitored and driven from Telegram via CCBot.
 
 ## Features
 
@@ -30,11 +35,11 @@ In fact, CCBot itself was built this way — iterating on itself through Claude 
 - **Send messages** — Forward text to the active CLI via tmux keystrokes
 - **Slash command forwarding** — Optional forwarding for unknown `/command` to the active CLI
 - **Create new sessions** — Start agent sessions from Telegram via directory browser
-- **Resume sessions** — Pick up where you left off by resuming an existing Claude session in a directory
+- **Resume sessions** — Pick up where you left off by resuming an existing Codex or Claude session
 - **Kill sessions** — Close a topic to auto-kill the associated tmux window
 - **Message history** — Browse conversation history with pagination (newest first)
-- **Provider support** — Claude Code (`claude`) and Codex CLI (`codex`)
-- **Session tracking** — Claude via `SessionStart` hook, Codex via rollout mapper
+- **Provider support** — Codex CLI (`codex`) or Claude Code (`claude`)
+- **Session tracking** — Codex via rollout mapper, Claude via `SessionStart` hook
 - **Persistent state** — Thread bindings and read offsets survive restarts
 
 ## Prerequisites
@@ -50,17 +55,17 @@ In fact, CCBot itself was built this way — iterating on itself through Claude 
 
 ```bash
 # Using uv (recommended)
-uv tool install git+https://github.com/six-ddc/ccmux.git
+uv tool install git+https://github.com/dimkk/ccbot.git
 
 # Or using pipx
-pipx install git+https://github.com/six-ddc/ccmux.git
+pipx install git+https://github.com/dimkk/ccbot.git
 ```
 
 ### Option 2: Install from source
 
 ```bash
-git clone https://github.com/six-ddc/ccmux.git
-cd ccmux
+git clone https://github.com/dimkk/ccbot.git
+cd ccbot
 uv sync
 ```
 
@@ -117,7 +122,7 @@ There is no runtime formatter switch to MarkdownV2.
 
 ## Session Tracking Setup
 
-### Claude Provider (Recommended)
+### Claude Provider (Hook Setup)
 
 Auto-install via CLI:
 
@@ -139,7 +144,7 @@ Or manually add to `~/.claude/settings.json`:
 }
 ```
 
-This writes window-session mappings to `$CCBOT_DIR/session_map.json` (`~/.ccbot/` by default), so the bot automatically tracks which Claude session is running in each tmux window — even after `/clear` or session restarts.
+This writes window-session mappings to `$CCBOT_DIR/session_map.json` (`~/.ccbot/` by default), so the bot automatically tracks sessions in tmux windows — even after `/clear` or session restarts.
 
 ### Codex Provider
 
@@ -200,17 +205,17 @@ Behavior:
 | `/screenshot` | Capture terminal screenshot     |
 | `/esc`        | Send Escape to interrupt active session |
 
-**Claude provider commands (forwarded via tmux):**
+**Provider commands (forwarded via tmux):**
 
 | Command    | Description                  |
 | ---------- | ---------------------------- |
 | `/clear`   | Clear conversation history   |
 | `/compact` | Compact conversation context |
 | `/cost`    | Show token/cost usage        |
-| `/help`    | Show Claude Code help        |
+| `/help`    | Show CLI help                |
 | `/memory`  | Edit CLAUDE.md               |
 
-For `CCBOT_PROVIDER=claude`, unknown `/command` is forwarded as-is (e.g. `/review`, `/doctor`, `/init`).
+For `CCBOT_PROVIDER=claude`, unknown `/command` is forwarded as-is (e.g. `/review`, `/doctor`, `/init`). For `CCBOT_PROVIDER=codex`, unknown slash commands can also be forwarded when supported by your Codex CLI.
 
 ### Topic Workflow
 
@@ -221,8 +226,8 @@ For `CCBOT_PROVIDER=claude`, unknown `/command` is forwarded as-is (e.g. `/revie
 1. Create a new topic in the Telegram group
 2. Send any message in the topic
 3. A directory browser appears — select the project directory
-4. If the directory has existing Claude sessions, a session picker appears — choose one to resume or start fresh
-5. A tmux window is created, agent command starts (with `--resume` when selecting a Claude session), and your pending message is forwarded
+4. If the directory has existing sessions, a session picker appears — choose one to resume or start fresh
+5. A tmux window is created, agent command starts (with `--resume` when selecting a session), and your pending message is forwarded
 
 **Sending messages:**
 
@@ -307,7 +312,7 @@ uv run ccbot
 | `$CCBOT_DIR/state.json`         | Thread bindings, window states, display names, and per-user read offsets |
 | `$CCBOT_DIR/session_map.json`   | Provider mappings `{tmux_session:window_id: {session_id, cwd, ...}}` |
 | `$CCBOT_DIR/monitor_state.json` | Monitor byte offsets per session (prevents duplicate notifications)     |
-| `~/.claude/projects/`           | Claude Code session data (read-only)                                    |
+| `~/.claude/projects/`           | Claude session data (read-only)                                         |
 | `~/.codex/sessions/`            | Codex rollout session logs (read-only)                                  |
 
 ## File Structure
@@ -322,7 +327,7 @@ src/ccbot/
 ├── session.py             # Session management, state persistence, message history
 ├── session_monitor.py     # JSONL file monitoring (polling + change detection)
 ├── monitor_state.py       # Monitor state persistence (byte offsets)
-├── transcript_parser.py   # Claude Code JSONL transcript parsing
+├── transcript_parser.py   # Codex/Claude JSONL transcript parsing
 ├── terminal_parser.py     # Terminal pane parsing (interactive UI + status line)
 ├── html_converter.py      # Markdown → Telegram HTML conversion + HTML-aware splitting
 ├── screenshot.py          # Terminal text → PNG image with ANSI color support
@@ -344,8 +349,8 @@ src/ccbot/
 
 ## Contributors
 
-Thanks to all the people who contribute! We encourage using Claude Code to collaborate on contributions.
+Thanks to all the people who contribute! We encourage using Codex or Claude to collaborate on contributions.
 
-<a href="https://github.com/six-ddc/ccmux/graphs/contributors">
-  <img src="https://contrib.rocks/image?repo=six-ddc/ccmux" />
+<a href="https://github.com/dimkk/ccbot/graphs/contributors">
+  <img src="https://contrib.rocks/image?repo=dimkk/ccbot" />
 </a>
