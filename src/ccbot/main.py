@@ -3,7 +3,8 @@
 Handles two execution modes:
   1. `ccbot hook` — delegates to hook.hook_main() for Claude Code hook processing.
   2. `ccbot codex-map` — updates session_map.json for Codex rollout sessions.
-  3. Default — configures logging, initializes tmux session, and starts the
+  3. `ccbot --app` — runs app-server bridge mode (no tmux).
+  4. Default — configures logging, initializes tmux session, and starts the
      Telegram bot polling loop via bot.create_bot().
 """
 
@@ -197,6 +198,15 @@ def main() -> None:
 
         changed = asyncio.run(codex_session_mapper.sync_session_map())
         print("updated" if changed else "no changes")
+        return
+
+    if "--app" in sys.argv[1:]:
+        from .app_server_bridge import app_bridge_main
+
+        app_args = [arg for arg in sys.argv[1:] if arg != "--app"]
+        code = app_bridge_main(app_args)
+        if code != 0:
+            raise SystemExit(code)
         return
 
     forward_ports = _parse_forward_ports(sys.argv[1:])
